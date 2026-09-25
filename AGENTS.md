@@ -22,7 +22,7 @@ Context for AI coding agents (and humans) working in this repo. Keep it short an
   - The final write is conditional on `PROCESSING`.
   - Keep both conditions; they are what make redelivery and the stuck-job sweeper safe.
 - **Workers run coroutines via `app.tasks.db.run_async`** (one loop per process). Don't use `asyncio.run` in tasks, because the provider SDK clients are bound to that loop.
-- **Redis clients get their URL from `settings.get_redis_url()`.** New async code should use `redis.asyncio` and never block the event loop. The rate limiter and auth routes still use the sync client (single-key operations with a 5s timeout); moving them is a known follow-up.
+- **Redis clients get their URL from `settings.get_redis_url()`.** New async code should use `redis.asyncio` and never block the event loop. The auth/session helpers in `redis_service` still use the sync client (single-key operations with a 5s timeout); the rate limiter and WebSocket fan-out are async.
 - **Operator-only endpoints use `require_platform_admin`** (user-ID allowlist). Don't gate on email or workspace role.
 - **Errors:** don't echo exception text in API responses outside `DEBUG`. Don't log tokens.
 
