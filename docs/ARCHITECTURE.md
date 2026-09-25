@@ -47,10 +47,11 @@ sequenceDiagram
 | Same message delivered twice | The claim is a conditional `UPDATE`; the second delivery finds the row no longer `PENDING` and exits. At most one billed AI call per row |
 | Provider error or rate limit | The manager fails over to the next enabled provider; if none succeed the row is `FAILED` with the provider error |
 | Unexpected exception in the worker | Caught at the task boundary; the row is `FAILED` so clients stop polling |
-| Task exceeds time limit (10 min soft / 12 hard) | The coroutine is cancelled and drained so it can't resume in the next task; the row is `FAILED` ("timed out") |
+| Task exceeds the 10 min soft limit | The coroutine is cancelled and drained so it can't resume in the next task; the row is `FAILED` ("timed out") |
+| Task hits the 12 min hard limit | The process is killed without writing anything; the sweeper fails the row once it is 30 min old |
 | Worker dies / message lost | Beat's sweeper fails `PENDING`/`PROCESSING` rows older than 30 minutes |
 | Late result after the sweeper fired | The final write is conditional on `status = PROCESSING`, so it can't flip `FAILED` back to `COMPLETED` |
-| Redis down for fan-out | Each replica delivers locally and the listener keeps retrying; the frontend keeps polling as a fallback |
+| Redis down | The broker is down too, so new work is marked `FAILED` at enqueue. Worker progress events are lost; API-originated socket messages are delivered locally; the listener keeps retrying and clients fall back to polling |
 
 ### Why the worker keeps one event loop
 
@@ -70,15 +71,15 @@ Schema changes go through Alembic only (`backend/alembic/versions/`). The API ne
 
 ## Multi-tenancy
 
-1. **Application layer (enforced today).** The workspace comes from the signed access token, never from the request body. Every read and write filters on it, and cross-tenant lookups return 404. The WebSocket handshake rejects a `workspace_id` that doesn't match the token.
-2. **Database layer (policies in place, enforcement pending).** Every tenant table has an RLS policy on `current_setting('app.workspace_id', true)`. The document routes set it with `set_config(..., true)` (transaction-scoped), and workers set it session-level on a dedicated connection. Setting it in every request handler is part of the enforcement work. Because the app currently connects as the table owner, Postgres doesn't apply the policies. Switching to a non-owner role with `FORCE ROW LEVEL SECURITY` would turn them on without code changes to the query layer.
+1. **Application layer (enforced today).** The workspace is the authenticated user's own, looked up from the token's user ID and never taken from the request body. Every read and write filters on it, and cross-tenant lookups return 404. The WebSocket handshake rejects a `workspace_id` that doesn't match the token.
+2. **Database layer (policies in place, enforcement pending).** Every tenant table has an RLS policy on `current_setting('app.workspace_id', true)`. The document routes set it with `set_config(..., true)` (transaction-scoped), and workers set it session-level on a dedicated connection. Setting it in every request handler is part of the enforcement work. Because the app currently connects as the table owner, Postgres doesn't apply the policies. Turning them on needs a non-owner role with `FORCE ROW LEVEL SECURITY`, the context set in every handler, and a bypass role for the paths that legitimately span workspaces (login by email, the stuck-job sweeper).
 
 ## Security
 
 - **Auth.** Access token 15 min, refresh token 7 days. Refresh rotates and blacklists the old token, and sessions live in Redis and can be revoked individually or all at once.
 - **Operator endpoints.** Global provider config, cost data and socket stats require a user ID listed in `PLATFORM_ADMIN_USER_IDS`. Workspace roles don't grant this, and email addresses aren't used because registration doesn't verify ownership.
 - **Rate limits.** Stored in Redis, per client IP, in three classes: auth (`5/15m`), transformation writes (`30/1h`), everything else (`100/1m`). Only honour `X-Forwarded-For` when `TRUST_PROXY_HEADERS=true`.
-- **Uploads.** Size limit, extension allowlist, and MIME detection from magic bytes. Files that fail validation return 400.
+- **Uploads.** Size limit and an extension/content-type allowlist; files that fail validation or the content scan return 400. Magic-byte sniffing runs when libmagic is available and is advisory (logged).
 - **URL ingestion.** The host is resolved and private, loopback and link-local addresses are rejected; redirects are not followed and timeouts are short. (A DNS answer could still change between check and fetch; pinning the resolved IP for the request would close that gap.)
 - **Response headers.** `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a deny-all CSP on JSON responses, and HSTS in production.
 - **Logs.** JWTs in WebSocket query strings are redacted from uvicorn logs, and 500 responses don't echo exception text outside debug mode.

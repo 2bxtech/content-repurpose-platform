@@ -9,11 +9,11 @@
 | Frontend | `cd frontend && npm test` | nothing | Services, API error mapping, realtime helpers |
 | Static | `make lint`, `npx tsc --noEmit` | nothing | Ruff correctness rules, TypeScript |
 
-CI (`.github/workflows/ci.yml`) runs every row on each pull request, plus a gitleaks scan of the full history.
+CI (`.github/workflows/ci.yml`) runs every row on each pull request, plus a gitleaks scan of each pull request's commits.
 
 ## How integration runs work
 
-`make test-integration` starts the compose stack under its own project name (`content-repurpose-it`) on separate host ports, with relaxed rate limits and the mock AI provider. It waits for health checks, runs the whole pytest suite with `TEST_API_URL` pointing at it, and tears the stack down with its volumes, even if tests fail. Your development stack and its data are never touched.
+`make test-integration` starts the compose stack under its own project name (`content-repurpose-it`) on separate host ports, with relaxed rate limits and the mock AI provider (AI keys are blanked, so the suite never calls a billed API). It waits for health checks, runs the whole pytest suite with `TEST_API_URL` pointing at it, and tears the stack down with its volumes, even if tests fail. Your development stack and its data are never touched.
 
 Without `TEST_API_URL`, integration tests are skipped, and the in-process app is pointed at an unreachable database. A plain `pytest` therefore can't write to whatever happens to be listening on a developer's machine. With `TEST_API_URL` set, an unreachable API is a failure, not a skip.
 

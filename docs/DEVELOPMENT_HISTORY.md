@@ -25,6 +25,9 @@ An audit before publishing compared the README against the code and found featur
   - Operator endpoints are gated by user ID.
   - Middleware was put in the right order, and about 3.6k lines of unreachable code were removed.
   - Three rounds of review (Claude and Codex) added: atomic job claims, a stuck-job sweeper, a persistent worker event loop, and token redaction in logs.
-- **#6 Tests.** The inherited suite had drifted: 55 failures and 32 errors against a live stack. It now passes (217 integration / 135 unit), and it surfaced a real bug where rejected uploads returned 500 instead of 400.
+- **#6 Tests.** The inherited suite had drifted: 55 failures and 32 errors against a live stack. The full suite now passes against a live stack, and the repair surfaced a real bug where rejected uploads returned 500 instead of 400.
 - **#3 CI.** GitHub Actions for backend, integration, frontend and secret scanning.
-- **#4 Frontend realtime.** The detail page updates from WebSocket events instead of 5-second polling.
+- **#4 Frontend realtime.** The detail page refreshes as soon as the worker's WebSocket event arrives; polling remains as a fallback.
+- **#8 UI polish.** Markdown tables render, and result pages have readable titles.
+- **#9 Fact-check fixes.** A docs-versus-code review found the mock provider could mask a failing real one, and `.env` settings weren't reaching the containers. Both are fixed.
+- **#7 Docs.** This README and the docs in `docs/`.

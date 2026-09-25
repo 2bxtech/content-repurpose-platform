@@ -33,16 +33,16 @@ flowchart LR
 1. `POST /api/transformations` validates access, stores a `PENDING` row, enqueues a Celery task, and returns immediately.
 2. A worker atomically claims the row (`PENDING → PROCESSING`), reads the document text from Postgres, and calls the provider manager. The manager tries providers in priority order.
 3. The worker records the result, tokens, cost and latency. It publishes `transformation_completed` to Redis.
-4. Every API replica relays the event to the owner's WebSocket connections. The page updates without polling; polling remains as a fallback.
+4. Every API replica relays the event to the owner's WebSocket connections, and the page refreshes as soon as it arrives. A 5-second poll keeps running underneath as the fallback.
 
 The deeper write-up, covering request lifecycle, data model and failure handling, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Key design decisions
 
 - **Tenant isolation: app-level workspace filters, with Postgres RLS as a second layer.**
-  - Every query is scoped by the `workspace_id` taken from the signed token. Integration tests assert that one tenant can't read another's documents, transformations or sockets.
+  - Every query is scoped to the authenticated user's workspace (looked up from the token's user ID, never taken from the request body). Integration tests assert that one tenant can't read another's documents, transformations or sockets.
   - RLS policies on every tenant table add a database-level backstop that doesn't depend on every query being written correctly.
-  - *Current limitation:* the app connects as the table owner, so Postgres doesn't enforce those policies yet. Enforcing them means switching the app to a non-owner role (plus `FORCE ROW LEVEL SECURITY`). The workers already scope their connections for this.
+  - *Current limitation:* the app connects as the table owner, so Postgres doesn't enforce those policies yet. Enforcing them means a non-owner app role with `FORCE ROW LEVEL SECURITY`, setting the workspace context in every handler (today only the document routes and the transformation worker do), and a bypass role for login and the stuck-job sweeper.
 - **Celery for AI calls.**
   - Generation takes seconds to minutes, costs money, and fails in provider-specific ways. Running it in the request would tie up API workers and lose work on timeouts.
   - The queue gives retries at the provider layer and an at-most-once billed call (the atomic claim). A beat sweeper fails jobs stuck past a deadline, so clients never poll forever.
@@ -51,9 +51,9 @@ The deeper write-up, covering request lifecycle, data model and failure handling
 - **UUID primary keys everywhere.** IDs aren't enumerable (`/documents/3` tells you nothing about `/documents/4`), can be generated without a database round trip, and don't collide across environments.
 - **Short-lived JWTs with refresh rotation.**
   - Access tokens last 15 minutes; refresh tokens last 7 days and carry a `jti` tracked in Redis.
-  - Refreshing blacklists the old refresh token, logout revokes the session, and a stolen refresh token works at most once.
+  - Refreshing blacklists the old refresh token, logout revokes the session, and a stolen refresh token stops working once the legitimate client has refreshed.
   - Browsers can't set headers on a WebSocket handshake, so the socket token travels in the query string. The access log redacts it.
-- **Provider abstraction with a mock.** Anthropic and OpenAI implement one interface; the manager handles failover order, rate limiting and cost tracking. A mock provider lets the whole stack, and CI, run with no API keys. It is refused when `ENVIRONMENT=production`, so a misconfigured deploy fails loudly instead of returning canned text.
+- **Provider abstraction with a mock.** Anthropic and OpenAI implement one interface; the manager handles failover order, rate limiting and cost tracking. A mock provider lets the whole stack, and CI, run with no API keys. It is only registered when no real provider is configured (so it never masks a failing one), and it is refused when `ENVIRONMENT=production`, so a misconfigured deploy fails loudly instead of returning canned text.
 
 ## Tech stack
 
@@ -82,7 +82,7 @@ cd frontend && npm ci && npm start
 
 - App: http://localhost:3000. Register, then try **Quick Transform**.
 - API docs: http://localhost:8000/docs
-- If ports 5433/6379/8000 are taken, override them, e.g. `API_HOST_PORT=8080 make up`.
+- If ports 5433/6379/8000 are taken, override them with `POSTGRES_HOST_PORT`, `REDIS_HOST_PORT` and `API_HOST_PORT`. For example, `API_HOST_PORT=8080 make up`, then start the frontend with `REACT_APP_API_URL=http://localhost:8080/api npm start`.
 - `make help` lists all targets, including `make api` / `make worker` for running the backend on the host with reload.
 
 ## Tests
@@ -92,7 +92,7 @@ make install            # venv with backend dev dependencies + frontend packages
 make test               # backend unit tests (no services needed)
 make test-integration   # builds an isolated compose stack, runs the full suite against it, tears it down
 make lint
-cd frontend && npm test
+cd frontend && CI=true npm test
 ```
 
 The integration suite drives the real stack. It checks that a transformation created over HTTP completes on the Celery worker and that its completion event arrives over the WebSocket. It also checks cross-tenant access over HTTP and WebSocket, operator-only endpoints, and security headers. CI runs all of the above plus a gitleaks scan on every PR. More detail is in [docs/TESTING.md](docs/TESTING.md).
