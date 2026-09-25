@@ -13,6 +13,7 @@ import CheckIcon from '@mui/icons-material/Check';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SendIcon from '@mui/icons-material/Send';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { getTransformation, createTransformation, refineTransformation } from '../services/transformationService';
 import { useRealtime } from '../context/WebSocketContext';
 import { isTerminalUpdateFor } from '../utils/realtime';
@@ -261,7 +262,8 @@ const TransformationDetail: React.FC = () => {
   };
 
   const renderTransformationTypeName = (type: string) => {
-    return type.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+    // SOCIAL_MEDIA -> Social Media
+    return type.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
   };
 
   if (loading) {
@@ -328,25 +330,27 @@ const TransformationDetail: React.FC = () => {
             </Box>
           )}
           
-          <Box sx={{ mt: 3 }}>
-            <Typography variant="h6">Parameters</Typography>
-            <Card variant="outlined" sx={{ mt: 1 }}>
-              <CardContent>
-                {Object.entries(transformation.parameters).map(([key, value]) => (
-                  <Typography key={key} variant="body2" component="div" sx={{ mb: 1 }}>
-                    <strong>{key.replace(/_/g, ' ')}:</strong> {
-                      Array.isArray(value) 
-                        ? value.join(', ') 
-                        : typeof value === 'object' 
-                          ? JSON.stringify(value) 
-                          : String(value)
-                    }
-                  </Typography>
-                ))}
-              </CardContent>
-            </Card>
-          </Box>
-          
+          {Object.keys(transformation.parameters || {}).length > 0 && (
+            <Box sx={{ mt: 3 }}>
+              <Typography variant="h6">Parameters</Typography>
+              <Card variant="outlined" sx={{ mt: 1 }}>
+                <CardContent>
+                  {Object.entries(transformation.parameters).map(([key, value]) => (
+                    <Typography key={key} variant="body2" component="div" sx={{ mb: 1 }}>
+                      <strong>{key.replace(/_/g, ' ')}:</strong> {
+                        Array.isArray(value)
+                          ? value.join(', ')
+                          : typeof value === 'object'
+                            ? JSON.stringify(value)
+                            : String(value)
+                      }
+                    </Typography>
+                  ))}
+                </CardContent>
+              </Card>
+            </Box>
+          )}
+
           {transformation.status === TransformationStatus.COMPLETED && transformation.result && (
             <Box sx={{ mt: 4 }}>
               <Grid container spacing={2} alignItems="center">
@@ -435,8 +439,19 @@ const TransformationDetail: React.FC = () => {
                       variant="outlined"
                     />
                   ) : (
-                    <Box sx={{ p: 2, border: '1px solid #e0e0e0', borderRadius: 1, minHeight: '300px' }}>
-                      <ReactMarkdown>
+                    <Box
+                      sx={{
+                        p: 2,
+                        border: 1,
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                        minHeight: '300px',
+                        overflowX: 'auto',
+                        '& table': { borderCollapse: 'collapse', my: 2 },
+                        '& th, & td': { border: 1, borderColor: 'divider', px: 1.5, py: 0.75, textAlign: 'left' },
+                      }}
+                    >
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {transformation.result}
                       </ReactMarkdown>
                     </Box>
