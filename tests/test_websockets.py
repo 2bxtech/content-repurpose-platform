@@ -1,313 +1,285 @@
 """
-Test suite for Phase 5 WebSocket functionality
-Systematic testing of real-time features and WebSocket infrastructure
+Real-time features: the /api/ws socket, its HTTP helpers, and the ConnectionManager.
 """
 
-import pytest
 import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
+
+import pytest
 import websockets
-from datetime import datetime
+from websockets.exceptions import ConnectionClosed, InvalidStatusCode
+
+from app.core.websocket_manager import ConnectionManager, WebSocketMessage
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@pytest.mark.integration
 class TestWebSocketInfrastructure:
     """Test core WebSocket infrastructure"""
 
-    @pytest.mark.asyncio
-    async def test_websocket_connection_establishment(self, websocket_client):
-        """Test basic WebSocket connection and welcome message"""
-        # Wait for welcome message
-        welcome_raw = await asyncio.wait_for(websocket_client.recv(), timeout=5.0)
-        welcome = json.loads(welcome_raw)
+    async def test_websocket_connection_establishment(self, websocket_client, auth_user, ws_helper):
+        welcome = await ws_helper.wait_for_message_type(websocket_client, "connection_established", 5.0)
 
-        assert welcome["type"] == "connection_established"
-        assert "connection_id" in welcome["data"]
-        assert "user_id" in welcome["data"]
-        assert "workspace_id" in welcome["data"]
+        assert welcome["data"]["connection_id"]
+        assert welcome["data"]["user_id"] == auth_user["user_id"]
+        assert welcome["data"]["workspace_id"] == auth_user["workspace_id"]
 
-    @pytest.mark.asyncio
     async def test_websocket_ping_pong(self, websocket_client, ws_helper):
-        """Test WebSocket heartbeat mechanism"""
-        # Send ping
-        ping_message = {
-            "type": "ping",
-            "data": {"timestamp": datetime.utcnow().isoformat()},
-        }
-
-        # Wait for pong response
+        timestamp = _now()
         pong = await ws_helper.send_and_wait_for_response(
-            websocket_client, ping_message, "pong", timeout=5.0
+            websocket_client, {"type": "ping", "timestamp": timestamp}, "pong"
         )
+        assert pong["data"]["timestamp"] == timestamp
 
-        assert pong["type"] == "pong"
-        assert "timestamp" in pong["data"]
-
-    @pytest.mark.asyncio
-    async def test_workspace_presence(self, websocket_client, ws_helper):
-        """Test workspace presence functionality"""
-        # Request workspace presence
-        presence_request = {"type": "get_workspace_presence", "data": {}}
-
-        # Wait for presence response
+    async def test_workspace_presence(self, websocket_client, auth_user, ws_helper):
+        # Sent unprompted after connecting, and again on request
+        await ws_helper.wait_for_message_type(websocket_client, "workspace_presence", 5.0)
         presence = await ws_helper.send_and_wait_for_response(
-            websocket_client, presence_request, "workspace_presence", timeout=5.0
+            websocket_client, {"type": "get_workspace_presence", "data": {}}, "workspace_presence"
         )
 
-        assert presence["type"] == "workspace_presence"
-        assert "workspace_id" in presence["data"]
-        assert "users" in presence["data"]
-        assert isinstance(presence["data"]["users"], list)
+        assert presence["data"]["workspace_id"] == auth_user["workspace_id"]
+        users = presence["data"]["users"]
+        assert [u["user_id"] for u in users] == [auth_user["user_id"]]
 
-    @pytest.mark.asyncio
-    async def test_workspace_message_broadcasting(self, websocket_client, ws_helper):
-        """Test workspace message broadcasting"""
-        # Send workspace message
-        test_message = {
-            "type": "workspace_message",
-            "data": {"message": "Test broadcast message", "test_id": str(uuid.uuid4())},
-        }
-
-        await websocket_client.send(json.dumps(test_message))
-
-        # Should receive the broadcasted message back
-        response = await ws_helper.wait_for_message_type(
-            websocket_client, "workspace_message", timeout=5.0
+    async def test_workspace_message_broadcasting(self, websocket_client, auth_user, ws_helper):
+        test_id = str(uuid.uuid4())
+        response = await ws_helper.send_and_wait_for_response(
+            websocket_client,
+            {"type": "workspace_message", "data": {"message": "Test broadcast message", "test_id": test_id}},
+            "workspace_message",
         )
 
-        assert response["type"] == "workspace_message"
-        assert response["data"]["message"] == "Test broadcast message"
+        assert response["data"] == {"message": "Test broadcast message", "test_id": test_id}
+        assert response["sender_id"] == auth_user["user_id"]
+        assert response["target_id"] == auth_user["workspace_id"]
 
 
+@pytest.mark.integration
 class TestRealTimeTransformations:
-    """Test real-time transformation progress updates"""
+    """Transformation progress is pushed to the owner's workspace"""
 
-    @pytest.mark.asyncio
     async def test_transformation_progress_updates(
-        self,
-        websocket_client,
-        mock_transformation_task,
-        ws_helper,
-        authenticated_client,
+        self, websocket_client, authenticated_client, test_document, sample_transformation_data, ws_helper
     ):
-        """Test that transformation progress is sent via WebSocket"""
-        transformation = mock_transformation_task["transformation"]
-        transformation_id = transformation["id"]
-
-        # Listen for transformation updates
-        update_messages = []
-
-        # Collect transformation messages for 10 seconds
-        start_time = asyncio.get_event_loop().time()
-        timeout = 10.0
-
-        while asyncio.get_event_loop().time() - start_time < timeout:
-            try:
-                message_raw = await asyncio.wait_for(
-                    websocket_client.recv(), timeout=1.0
-                )
-                message = json.loads(message_raw)
-
-                if (
-                    message.get("type")
-                    in [
-                        "transformation_started",
-                        "transformation_progress",
-                        "transformation_completed",
-                        "transformation_failed",
-                    ]
-                    and message["data"].get("transformation_id") == transformation_id
-                ):
-                    update_messages.append(message)
-
-                    # If we get completion, break early
-                    if message.get("type") in [
-                        "transformation_completed",
-                        "transformation_failed",
-                    ]:
-                        break
-
-            except asyncio.TimeoutError:
-                continue
-            except json.JSONDecodeError:
-                continue
-
-        # Verify we received transformation updates
-        assert len(update_messages) > 0, (
-            "No transformation updates received via WebSocket"
-        )
-
-        # Check for expected message types
-        message_types = [msg["type"] for msg in update_messages]
-
-        # Should have at least one progress-related message
-        progress_types = [
-            "transformation_started",
-            "transformation_progress",
-            "transformation_completed",
-            "transformation_failed",
-        ]
-
-        assert any(msg_type in progress_types for msg_type in message_types), (
-            f"No transformation progress messages found. Got: {message_types}"
-        )
-
-
-class TestWebSocketAPI:
-    """Test WebSocket-related HTTP API endpoints"""
-
-    @pytest.mark.asyncio
-    async def test_websocket_stats_endpoint(self, authenticated_client):
-        """Test WebSocket statistics endpoint"""
-        response = await authenticated_client.get("/api/ws/stats")
-
-        assert response.status_code == 200
-
-        stats = response.json()
-        assert "websocket_stats" in stats
-        assert "total_connections" in stats["websocket_stats"]
-        assert "unique_users" in stats["websocket_stats"]
-        assert "active_workspaces" in stats["websocket_stats"]
-
-    @pytest.mark.asyncio
-    async def test_websocket_broadcast_api(self, authenticated_client):
-        """Test HTTP broadcast API for server-side messaging"""
-        broadcast_data = {
-            "type": "test_broadcast",
-            "data": {
-                "message": "Test API broadcast",
-                "timestamp": datetime.utcnow().isoformat(),
-            },
-            "target": "broadcast",
-        }
+        await ws_helper.wait_for_message_type(websocket_client, "connection_established", 5.0)
 
         response = await authenticated_client.post(
-            "/api/ws/broadcast", json=broadcast_data
+            "/api/transformations", json={**sample_transformation_data, "document_id": test_document["id"]}
         )
+        assert response.status_code == 201
+        transformation_id = response.json()["id"]
 
+        async def collect():
+            seen = []
+            while True:
+                message = json.loads(await websocket_client.recv())
+                if message["type"].startswith("transformation_"):
+                    assert message["data"]["transformation_id"] == transformation_id
+                    seen.append(message["type"])
+                    if message["type"] in ("transformation_completed", "transformation_failed"):
+                        return seen
+
+        message_types = await asyncio.wait_for(collect(), 60)
+
+        assert message_types[0] == "transformation_started"
+        assert message_types[-1] == "transformation_completed"
+
+
+@pytest.mark.integration
+class TestWebSocketAPI:
+    """WebSocket-related HTTP endpoints"""
+
+    async def test_websocket_stats_endpoint_requires_platform_admin(self, authenticated_client):
+        response = await authenticated_client.get("/api/ws/stats")
+        assert response.status_code == 403
+
+    async def test_websocket_broadcast_api(self, authenticated_client, websocket_client, ws_helper):
+        """The HTTP broadcast reaches the caller's own workspace; client targets are ignored"""
+        await ws_helper.wait_for_message_type(websocket_client, "connection_established", 5.0)
+
+        response = await authenticated_client.post(
+            "/api/ws/broadcast",
+            json={
+                "type": "test_broadcast",
+                "data": {"message": "Test API broadcast", "timestamp": _now()},
+                "target": "broadcast",
+            },
+        )
         assert response.status_code == 200
-        result = response.json()
-        assert result["status"] == "message_sent"
-        assert result["type"] == "test_broadcast"
+        assert response.json() == {"status": "message_sent", "type": "test_broadcast"}
+
+        delivered = await ws_helper.wait_for_message_type(websocket_client, "test_broadcast", 5.0)
+        assert delivered["data"]["message"] == "Test API broadcast"
+        assert delivered["target"] == "workspace"
 
 
+@pytest.mark.integration
 class TestWebSocketErrorHandling:
     """Test WebSocket error handling and edge cases"""
 
-    @pytest.mark.asyncio
-    async def test_invalid_message_format(self, websocket_client):
-        """Test handling of invalid JSON messages"""
-        # Send invalid JSON
-        await websocket_client.send("invalid json {")
-
-        # Should receive error response
-        error_raw = await asyncio.wait_for(websocket_client.recv(), timeout=5.0)
-        error = json.loads(error_raw)
-
-        assert error["type"] == "error"
+    async def test_invalid_message_format(self, websocket_client, ws_helper):
+        error = await ws_helper.send_and_wait_for_response(websocket_client, "invalid json {", "error")
         assert "Invalid JSON format" in error["data"]["message"]
 
-    @pytest.mark.asyncio
-    async def test_unknown_message_type(self, websocket_client):
-        """Test handling of unknown message types"""
-        unknown_message = {"type": "unknown_message_type", "data": {"test": "data"}}
-
-        await websocket_client.send(json.dumps(unknown_message))
-
-        # Should receive error response
-        error_raw = await asyncio.wait_for(websocket_client.recv(), timeout=5.0)
-        error = json.loads(error_raw)
-
-        assert error["type"] == "error"
+    async def test_unknown_message_type(self, websocket_client, ws_helper):
+        error = await ws_helper.send_and_wait_for_response(
+            websocket_client, {"type": "unknown_message_type", "data": {"test": "data"}}, "error"
+        )
         assert "Unknown message type" in error["data"]["message"]
 
 
+@pytest.mark.integration
 class TestWebSocketAuthentication:
-    """Test WebSocket authentication and authorization"""
+    """The handshake is refused (HTTP 403) before the socket is accepted"""
 
-    @pytest.mark.asyncio
-    async def test_websocket_without_token(self, websocket_url, test_workspace_id):
-        """Test WebSocket connection without authentication token"""
-        ws_url_no_auth = f"{websocket_url}?workspace_id={test_workspace_id}"
+    async def test_websocket_without_token(self, websocket_url, auth_user):
+        with pytest.raises((InvalidStatusCode, ConnectionClosed)):
+            async with websockets.connect(f"{websocket_url}?workspace_id={auth_user['workspace_id']}") as ws:
+                await asyncio.wait_for(ws.recv(), 5)
 
-        with pytest.raises(websockets.exceptions.ConnectionClosedError):
-            async with websockets.connect(ws_url_no_auth) as websocket:
-                # Should be closed immediately due to auth failure
-                await websocket.recv()
-
-    @pytest.mark.asyncio
-    async def test_websocket_with_invalid_token(self, websocket_url, test_workspace_id):
-        """Test WebSocket connection with invalid token"""
-        ws_url_bad_auth = (
-            f"{websocket_url}?token=invalid_token&workspace_id={test_workspace_id}"
-        )
-
-        with pytest.raises(websockets.exceptions.ConnectionClosedError):
-            async with websockets.connect(ws_url_bad_auth) as websocket:
-                # Should be closed due to invalid token
-                await websocket.recv()
+    async def test_websocket_with_invalid_token(self, websocket_url, auth_user):
+        with pytest.raises((InvalidStatusCode, ConnectionClosed)):
+            async with websockets.connect(
+                f"{websocket_url}?token=invalid_token&workspace_id={auth_user['workspace_id']}"
+            ) as ws:
+                await asyncio.wait_for(ws.recv(), 5)
 
 
-# Performance and load testing
+@pytest.mark.integration
 class TestWebSocketPerformance:
     """Test WebSocket performance characteristics"""
 
-    @pytest.mark.asyncio
     @pytest.mark.slow
-    async def test_multiple_connections(
-        self, authenticated_client, websocket_url, test_workspace_id
-    ):
-        """Test multiple WebSocket connections from same user"""
-        # Extract token
-        auth_header = authenticated_client.headers.get("Authorization", "")
-        token = auth_header[7:]  # Remove "Bearer "
-
-        ws_url_with_auth = (
-            f"{websocket_url}?token={token}&workspace_id={test_workspace_id}"
-        )
-
-        # Create multiple connections
+    async def test_multiple_connections(self, auth_user, websocket_url, ws_helper):
+        url = f"{websocket_url}?token={auth_user['token']}&workspace_id={auth_user['workspace_id']}"
         connections = []
         try:
-            for i in range(3):
-                websocket = await websockets.connect(ws_url_with_auth)
-                connections.append(websocket)
+            for _ in range(3):
+                ws = await websockets.connect(url)
+                connections.append(ws)
+                await ws_helper.wait_for_message_type(ws, "connection_established", 5.0)
 
-                # Wait for welcome message
-                welcome_raw = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                welcome = json.loads(welcome_raw)
-                assert welcome["type"] == "connection_established"
-
-            # Test that all connections are active
-            assert len(connections) == 3
-
+            # Presence de-duplicates connections of the same user
+            presence = await ws_helper.send_and_wait_for_response(
+                connections[-1], {"type": "get_workspace_presence", "data": {}}, "workspace_presence"
+            )
+            assert len(presence["data"]["users"]) == 1
         finally:
-            # Clean up connections
             for ws in connections:
-                try:
-                    await ws.close()
-                except:
-                    pass
+                await ws.close()
 
-    @pytest.mark.asyncio
     @pytest.mark.slow
     async def test_rapid_message_sending(self, websocket_client):
-        """Test rapid message sending doesn't break connection"""
-        # Send multiple ping messages rapidly
-        for i in range(10):
-            ping_message = {
-                "type": "ping",
-                "data": {"sequence": i, "timestamp": datetime.utcnow().isoformat()},
-            }
-            await websocket_client.send(json.dumps(ping_message))
+        count = 10
+        for i in range(count):
+            await websocket_client.send(json.dumps({"type": "ping", "timestamp": str(i)}))
 
-        # Should still be connected and responsive
-        final_ping = {"type": "ping", "data": {"final": True}}
-        await websocket_client.send(json.dumps(final_ping))
+        async def pongs():
+            received = []
+            while len(received) < count:
+                message = json.loads(await websocket_client.recv())
+                if message["type"] == "pong":
+                    received.append(message["data"]["timestamp"])
+            return received
 
-        # Should receive at least the final pong
-        response_raw = await asyncio.wait_for(websocket_client.recv(), timeout=5.0)
-        response = json.loads(response_raw)
+        # Every ping is answered, in order
+        assert await asyncio.wait_for(pongs(), 10) == [str(i) for i in range(count)]
 
-        # Might be any of the pong responses, just verify connection works
-        assert response["type"] == "pong"
+
+class FakeWebSocket:
+    """Just enough of starlette's WebSocket for ConnectionManager."""
+
+    def __init__(self):
+        self.accepted = False
+        self.sent = []
+
+    async def accept(self):
+        self.accepted = True
+
+    async def send_text(self, text):
+        self.sent.append(json.loads(text))
+
+    def types(self):
+        return [m["type"] for m in self.sent]
+
+
+@pytest.mark.unit
+class TestConnectionManager:
+    """In-process routing rules of ConnectionManager (no Redis)"""
+
+    @pytest.fixture
+    def manager(self):
+        return ConnectionManager()
+
+    async def test_connect_registers_presence(self, manager):
+        ws = FakeWebSocket()
+        connection_id = await manager.connect(ws, "user-1", "ws-1", {"username": "alice"})
+
+        assert ws.accepted
+        presence = manager.get_workspace_presence("ws-1")
+        assert [(p.user_id, p.connection_id) for p in presence] == [("user-1", connection_id)]
+        assert manager.get_connection_count() == {
+            "total_connections": 1,
+            "unique_users": 1,
+            "active_workspaces": 1,
+        }
+        # The workspace (including the new connection) is told someone joined
+        assert ws.sent[-1]["type"] == "presence_update"
+        assert ws.sent[-1]["data"]["event"] == "user_connected"
+
+    async def test_broadcast_stays_inside_workspace(self, manager):
+        alice, bob, mallory = FakeWebSocket(), FakeWebSocket(), FakeWebSocket()
+        await manager.connect(alice, "alice", "ws-a")
+        await manager.connect(bob, "bob", "ws-a")
+        await manager.connect(mallory, "mallory", "ws-b")
+
+        await manager.broadcast_to_workspace(
+            "ws-a", WebSocketMessage(type="transformation_update", data={"transformation_id": "t-1"})
+        )
+
+        assert "transformation_update" in alice.types()
+        assert "transformation_update" in bob.types()
+        assert "transformation_update" not in mallory.types()
+
+    async def test_send_to_user_reaches_all_their_connections(self, manager):
+        phone, laptop, other = FakeWebSocket(), FakeWebSocket(), FakeWebSocket()
+        await manager.connect(phone, "user-1", "ws-1")
+        await manager.connect(laptop, "user-1", "ws-1")
+        await manager.connect(other, "user-2", "ws-1")
+
+        await manager.send_to_user("user-1", WebSocketMessage(type="notification", data={"message": "done"}))
+
+        assert "notification" in phone.types()
+        assert "notification" in laptop.types()
+        assert "notification" not in other.types()
+
+    async def test_fan_out_without_redis_delivers_locally(self, manager):
+        member, outsider = FakeWebSocket(), FakeWebSocket()
+        await manager.connect(member, "user-1", "ws-1")
+        await manager.connect(outsider, "user-2", "ws-2")
+
+        await manager.fan_out(
+            WebSocketMessage(type="workspace_message", data={}, target="workspace", target_id="ws-1")
+        )
+
+        assert "workspace_message" in member.types()
+        assert "workspace_message" not in outsider.types()
+
+    async def test_disconnect_cleans_up(self, manager):
+        leaving, staying = FakeWebSocket(), FakeWebSocket()
+        leaving_id = await manager.connect(leaving, "user-1", "ws-1")
+        await manager.connect(staying, "user-2", "ws-1")
+
+        await manager.disconnect(leaving_id)
+
+        assert [p.user_id for p in manager.get_workspace_presence("ws-1")] == ["user-2"]
+        assert "user-1" not in manager.user_connections
+        assert staying.sent[-1]["data"]["event"] == "user_disconnected"
+        # Disconnecting twice is harmless
+        await manager.disconnect(leaving_id)

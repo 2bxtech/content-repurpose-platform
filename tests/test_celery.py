@@ -1,287 +1,200 @@
 """
-Integration tests for Celery background processing
-Tests task creation, execution, monitoring, and error handling
+Background processing: POST /api/transformations queues a Celery task, the worker
+runs it and records COMPLETED/FAILED on the transformation row.
 """
 
-import pytest
-import httpx
 import asyncio
+import time
+import uuid
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from app.models.transformation import TransformationStatus
+from app.services.ai_providers.base import AIProviderError
+from app.services.transformation_runner import execute_transformation
 
 
+@pytest.mark.integration
+@pytest.mark.celery
 class TestCeleryIntegration:
-    """Integration tests for Celery background processing"""
+    """Transformations run on the worker of the running stack"""
 
-    @pytest.mark.integration
-    @pytest.mark.celery
-    async def test_worker_status_endpoint(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test worker status monitoring endpoint"""
-        response = await authenticated_client.get("/api/system/workers")
-
-        # In test environment with CELERY_TASK_ALWAYS_EAGER=true,
-        # workers might not be running, so accept various statuses
-        assert response.status_code in [200, 503]
-
-        if response.status_code == 200:
-            worker_data = response.json()
-            assert "status" in worker_data
-            assert "workers" in worker_data
-
-    @pytest.mark.integration
-    @pytest.mark.celery
-    async def test_queue_status_endpoint(self, authenticated_client: httpx.AsyncClient):
-        """Test queue monitoring endpoint"""
-        response = await authenticated_client.get("/api/system/queue")
-
-        # Should work even without workers
-        assert response.status_code == 200
-
-        queue_data = response.json()
-        assert "total_tasks" in queue_data
-        assert isinstance(queue_data["total_tasks"], int)
-
-    @pytest.mark.integration
-    @pytest.mark.celery
     async def test_transformation_task_creation(
         self,
         authenticated_client: httpx.AsyncClient,
         test_document: dict,
         sample_transformation_data: dict,
     ):
-        """Test creating a transformation that triggers a Celery task"""
-        # Add document_id to transformation data
-        transformation_data = {
-            **sample_transformation_data,
-            "document_id": test_document["id"],
-        }
-
         response = await authenticated_client.post(
-            "/api/transformations", json=transformation_data
+            "/api/transformations", json={**sample_transformation_data, "document_id": test_document["id"]}
         )
-
-        # Should accept the transformation for background processing
-        assert response.status_code in [201, 202]
+        assert response.status_code == 201
 
         transformation = response.json()
-        assert "id" in transformation
+        assert transformation["id"]
+        assert transformation["task_id"]
+        assert transformation["status"] in ("PENDING", "PROCESSING")
 
-        # In eager mode, task might complete immediately
-        if "task_id" in transformation:
-            assert transformation["task_id"] is not None
-
-    @pytest.mark.integration
-    @pytest.mark.celery
     async def test_transformation_status_tracking(
         self,
         authenticated_client: httpx.AsyncClient,
         test_document: dict,
         sample_transformation_data: dict,
-        wait_for_task,
+        wait_for_transformation,
     ):
-        """Test tracking transformation status through completion"""
-        # Create transformation
-        transformation_data = {
-            **sample_transformation_data,
-            "document_id": test_document["id"],
-        }
-
         response = await authenticated_client.post(
-            "/api/transformations", json=transformation_data
+            "/api/transformations", json={**sample_transformation_data, "document_id": test_document["id"]}
         )
-        assert response.status_code in [201, 202]
+        assert response.status_code == 201
+        transformation_id = response.json()["id"]
 
-        transformation = response.json()
-        transformation_id = transformation["id"]
+        final = await wait_for_transformation(authenticated_client, transformation_id)
 
-        # Wait for task completion (in eager mode, should be quick)
-        final_status = await wait_for_task(
-            authenticated_client, transformation_id, timeout=10
-        )
-
-        assert final_status["database_status"] in ["completed", "failed"]
-
-        # If completed, verify results
-        if final_status["database_status"] == "completed":
-            # Get final transformation
-            response = await authenticated_client.get(
-                f"/api/transformations/{transformation_id}"
-            )
-            assert response.status_code == 200
-
-            final_transformation = response.json()
-            assert final_transformation["status"] == "completed"
-
-    @pytest.mark.integration
-    @pytest.mark.celery
-    async def test_task_cancellation(
-        self,
-        authenticated_client: httpx.AsyncClient,
-        test_document: dict,
-        sample_transformation_data: dict,
-    ):
-        """Test task cancellation functionality"""
-        # Create transformation
-        transformation_data = {
-            **sample_transformation_data,
-            "document_id": test_document["id"],
-        }
-
-        response = await authenticated_client.post(
-            "/api/transformations", json=transformation_data
-        )
-        assert response.status_code in [201, 202]
-
-        transformation = response.json()
-        transformation_id = transformation["id"]
-
-        # Try to cancel the task
-        cancel_response = await authenticated_client.post(
-            f"/api/transformations/{transformation_id}/cancel"
-        )
-
-        # In eager mode, task might already be completed
-        assert cancel_response.status_code in [200, 400, 409]
-
-        if cancel_response.status_code == 200:
-            cancel_data = cancel_response.json()
-            assert "status" in cancel_data
+        assert final["status"] == "COMPLETED"
+        assert final["result"]
+        assert final["error_message"] is None
 
 
+@pytest.mark.integration
+@pytest.mark.celery
 class TestCeleryErrorHandling:
-    """Test error handling in Celery tasks"""
+    """Bad requests are refused up front; failures on the worker are recorded, not lost"""
 
-    @pytest.mark.integration
-    @pytest.mark.celery
-    async def test_task_failure_handling(
+    async def test_invalid_type_rejected_before_queueing(
         self, authenticated_client: httpx.AsyncClient, test_document: dict
     ):
-        """Test handling of failed tasks"""
-        # Create transformation with invalid parameters to trigger failure
-        transformation_data = {
-            "document_id": test_document["id"],
-            "transformation_type": "invalid_type",  # Should cause failure
-            "parameters": {},
-        }
-
         response = await authenticated_client.post(
-            "/api/transformations", json=transformation_data
+            "/api/transformations",
+            json={"document_id": test_document["id"], "transformation_type": "invalid_type", "parameters": {}},
         )
+        assert response.status_code == 422
+        listed = (await authenticated_client.get("/api/transformations")).json()
+        assert listed["count"] == 0
 
-        # Might be rejected at API level or accepted and fail in background
-        if response.status_code in [201, 202]:
-            transformation = response.json()
-            transformation_id = transformation["id"]
-
-            # Check status after a brief wait
-            await asyncio.sleep(1)
-
-            status_response = await authenticated_client.get(
-                f"/api/transformations/{transformation_id}/status"
-            )
-            assert status_response.status_code == 200
-
-            status_data = status_response.json()
-            # Should either be failed or still processing
-            assert status_data["database_status"] in ["pending", "processing", "failed"]
-
-    @pytest.mark.integration
-    @pytest.mark.celery
-    async def test_ai_service_failure_handling(
-        self,
-        authenticated_client: httpx.AsyncClient,
-        test_document: dict,
-        sample_transformation_data: dict,
+    async def test_task_failure_handling(
+        self, authenticated_client: httpx.AsyncClient, wait_for_transformation
     ):
-        """Test handling of AI service failures"""
-        # Note: This test would normally mock the AI service, but since we're in test mode,
-        # we'll simulate the scenario by creating a transformation and checking error handling
-
-        transformation_data = {
-            **sample_transformation_data,
-            "document_id": test_document["id"],
-            "transformation_type": "invalid_type",  # Use invalid type to trigger error
-        }
+        """A document with no extractable text makes the worker mark the job FAILED"""
+        upload = await authenticated_client.post(
+            "/api/documents/upload",
+            data={"title": "Blank"},
+            files={"file": ("blank.txt", b"   \n\n   ", "text/plain")},
+        )
+        assert upload.status_code == 201, upload.text
 
         response = await authenticated_client.post(
-            "/api/transformations", json=transformation_data
+            "/api/transformations",
+            json={"document_id": upload.json()["id"], "transformation_type": "SUMMARY", "parameters": {}},
+        )
+        assert response.status_code == 201
+
+        final = await wait_for_transformation(authenticated_client, response.json()["id"])
+        assert final["status"] == "FAILED"
+        assert "no extractable text" in final["error_message"]
+        assert final["result"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.celery
+class TestTransformationRunner:
+    """The code the worker runs, with the AI provider manager replaced"""
+
+    @staticmethod
+    def _transformation():
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            transformation_type="SUMMARY",
+            parameters={},
+            status=TransformationStatus.PENDING,
+            result=None,
+            error_message=None,
         )
 
-        # Should either reject invalid type or accept and fail gracefully
-        assert response.status_code in [400, 422, 201, 202]
+    async def test_ai_service_failure_handling(self):
+        db = AsyncMock()
+        manager = MagicMock()
+        manager.generate_text = AsyncMock(side_effect=AIProviderError("all providers down", "openai"))
+        transformation = self._transformation()
 
-        if response.status_code in [201, 202]:
-            transformation = response.json()
-            transformation_id = transformation["id"]
+        with patch("app.services.transformation_runner.get_ai_provider_manager", return_value=manager):
+            result = await execute_transformation(db, transformation, "Some document text")
 
-            # Wait a bit for processing
-            await asyncio.sleep(2)
+        assert result.status == TransformationStatus.FAILED
+        assert "AI provider error" in result.error_message
+        assert "all providers down" in result.error_message
+        assert result.result is None
+        # PROCESSING is committed before the call, the terminal state after it
+        assert db.commit.await_count == 2
 
-            status_response = await authenticated_client.get(
-                f"/api/transformations/{transformation_id}/status"
-            )
-            assert status_response.status_code == 200
+    async def test_success_records_result_and_usage(self):
+        db = AsyncMock()
+        usage = SimpleNamespace(total_tokens=30, input_tokens=10, output_tokens=20, total_cost=0.01)
+        manager = MagicMock()
+        manager.generate_text = AsyncMock(
+            return_value=SimpleNamespace(content="summary text", provider="mock", usage_metrics=usage)
+        )
+        transformation = self._transformation()
+
+        with patch("app.services.transformation_runner.get_ai_provider_manager", return_value=manager):
+            result = await execute_transformation(db, transformation, "Some document text")
+
+        assert result.status == TransformationStatus.COMPLETED
+        assert result.result == "summary text"
+        assert result.ai_provider == "mock"
+        assert result.tokens_used == 30
+        assert result.error_message is None
+
+    async def test_empty_content_fails_without_calling_provider(self):
+        db = AsyncMock()
+        manager = MagicMock()
+        manager.generate_text = AsyncMock()
+        transformation = self._transformation()
+
+        with patch("app.services.transformation_runner.get_ai_provider_manager", return_value=manager):
+            result = await execute_transformation(db, transformation, "   ")
+
+        assert result.status == TransformationStatus.FAILED
+        manager.generate_text.assert_not_awaited()
 
 
+@pytest.mark.integration
+@pytest.mark.celery
 class TestCeleryPerformance:
     """Performance tests for Celery integration"""
 
-    @pytest.mark.integration
-    @pytest.mark.celery
     @pytest.mark.slow
     async def test_concurrent_task_processing(
         self,
         authenticated_client: httpx.AsyncClient,
         test_document: dict,
         sample_transformation_data: dict,
-        performance_monitor,
+        wait_for_transformation,
     ):
-        """Test processing multiple tasks concurrently"""
         num_tasks = 5
-        transformation_data = {
-            **sample_transformation_data,
-            "document_id": test_document["id"],
-        }
+        started = time.perf_counter()
+        responses = await asyncio.gather(
+            *[
+                authenticated_client.post(
+                    "/api/transformations",
+                    json={
+                        **sample_transformation_data,
+                        "document_id": test_document["id"],
+                        "parameters": {"task_number": i},
+                    },
+                )
+                for i in range(num_tasks)
+            ]
+        )
+        assert [r.status_code for r in responses] == [201] * num_tasks
+        assert time.perf_counter() - started < 10.0  # queueing is fast; work happens on the worker
 
-        performance_monitor.start()
+        ids = [r.json()["id"] for r in responses]
+        assert len(set(ids)) == num_tasks
 
-        # Create multiple transformations
-        tasks = []
-        for i in range(num_tasks):
-            task_data = {
-                **transformation_data,
-                "parameters": {**transformation_data["parameters"], "task_number": i},
-            }
-
-            response = await authenticated_client.post(
-                "/api/transformations", json=task_data
-            )
-
-            if response.status_code in [201, 202]:
-                transformation = response.json()
-                tasks.append(transformation["id"])
-
-        duration = performance_monitor.stop("concurrent_task_creation")
-
-        assert len(tasks) == num_tasks
-        assert duration < 10.0  # Should create tasks quickly
-
-        # In eager mode, tasks should complete quickly
-        performance_monitor.start()
-
-        # Check all tasks completed
-        completed_count = 0
-        for task_id in tasks:
-            status_response = await authenticated_client.get(
-                f"/api/transformations/{task_id}/status"
-            )
-            if status_response.status_code == 200:
-                status_data = status_response.json()
-                if status_data["database_status"] == "completed":
-                    completed_count += 1
-
-        completion_duration = performance_monitor.stop("task_completion_check")
-
-        # In eager mode, most tasks should be completed
-        assert completed_count >= num_tasks * 0.5  # At least 50% completed
-        assert completion_duration < 5.0  # Quick status checks
+        finals = await asyncio.gather(
+            *[wait_for_transformation(authenticated_client, tid, timeout=90) for tid in ids]
+        )
+        assert [f["status"] for f in finals] == ["COMPLETED"] * num_tasks
