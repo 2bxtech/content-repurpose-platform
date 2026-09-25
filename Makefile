@@ -6,7 +6,8 @@ VENV := .venv
 BIN := $(if $(filter Windows_NT,$(OS)),$(VENV)/Scripts,$(VENV)/bin)
 # Integration tests get their own compose project so they never touch the dev stack's data.
 IT_API_PORT ?= 18000
-IT := POSTGRES_HOST_PORT=15433 REDIS_HOST_PORT=16379 API_HOST_PORT=$(IT_API_PORT) RATE_LIMIT_AUTH_ATTEMPTS=1000/1m RATE_LIMIT_API_CALLS=5000/1m RATE_LIMIT_TRANSFORMATIONS=1000/1m docker compose -p content-repurpose-it
+# AI keys are blanked so the suite always uses the mock provider and never bills a real API.
+IT := CLAUDE_API_KEY= OPENAI_API_KEY= POSTGRES_HOST_PORT=15433 REDIS_HOST_PORT=16379 API_HOST_PORT=$(IT_API_PORT) RATE_LIMIT_AUTH_ATTEMPTS=1000/1m RATE_LIMIT_API_CALLS=5000/1m RATE_LIMIT_TRANSFORMATIONS=1000/1m docker compose -p content-repurpose-it
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
