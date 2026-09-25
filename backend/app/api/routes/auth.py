@@ -434,14 +434,14 @@ async def refresh_access_token(
             detail="User not found or inactive",
         )
 
-    # A refresh token is only valid while its server-side session exists. This
-    # makes logout/revocation effective instead of relying on JWT expiry alone.
+    # A refresh token is only valid while its server-side session exists, and it is
+    # exchanged exactly once: consuming the session is a single atomic delete, so two
+    # concurrent refreshes with the same token can't both succeed. This also makes
+    # logout/revocation effective instead of relying on JWT expiry alone.
     if token_data.jti:
-        session_exists = redis_service.user_session_exists(
-            str(user["id"]), token_data.jti
-        )
-        if session_exists is False or (
-            session_exists is None and settings.ENVIRONMENT == "production"
+        consumed = redis_service.consume_user_session(str(user["id"]), token_data.jti)
+        if consumed is False or (
+            consumed is None and settings.ENVIRONMENT == "production"
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -461,7 +461,6 @@ async def refresh_access_token(
     new_refresh_token = auth_service.create_refresh_token(data=token_claims)
     device_info = auth_service.extract_device_info(request)
     if token_data.jti:
-        redis_service.invalidate_user_session(str(user["id"]), token_data.jti)
         auth_service.blacklist_token(refresh_request.refresh_token, "refresh")
     session_created = auth_service.create_session(
         user["id"], new_refresh_token, device_info

@@ -164,6 +164,20 @@ class RedisService:
             logger.error(f"Error invalidating session: {str(e)}")
             return False
 
+    def consume_user_session(self, user_id: str, refresh_token_jti: str) -> Optional[bool]:
+        """Atomically end a session so its refresh token can be exchanged once.
+
+        DEL is atomic, so when two requests race with the same refresh token exactly
+        one gets True. None means the session store is unavailable.
+        """
+        if not self.is_connected():
+            return None
+        try:
+            return self.redis_client.delete(f"session:{user_id}:{refresh_token_jti}") == 1
+        except Exception as e:
+            logger.error(f"Error consuming session: {str(e)}")
+            return None
+
     def user_session_exists(
         self, user_id: str, refresh_token_jti: str
     ) -> Optional[bool]:

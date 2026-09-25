@@ -3,6 +3,7 @@ Unit tests for authentication system
 Tests JWT tokens, password validation, user registration, etc.
 """
 
+import asyncio
 import uuid
 
 import httpx
@@ -213,6 +214,25 @@ class TestAuthenticationIntegration:
             "/api/auth/refresh", json={"refresh_token": user["refresh_token"]}
         )
         assert refresh_after_logout.status_code == 401
+
+    @pytest.mark.integration
+    @pytest.mark.auth
+    async def test_concurrent_refreshes_with_one_token_succeed_once(
+        self, api_client: httpx.AsyncClient, user_factory
+    ):
+        """A refresh token is single-use even when requests race (e.g. a stolen copy
+        replayed at the same moment as the legitimate client)."""
+        user = await user_factory()
+
+        responses = await asyncio.gather(
+            *[
+                api_client.post("/api/auth/refresh", json={"refresh_token": user["refresh_token"]})
+                for _ in range(5)
+            ]
+        )
+
+        codes = sorted(r.status_code for r in responses)
+        assert codes == [200, 401, 401, 401, 401], codes
 
 
 class TestAuthenticationSecurity:
