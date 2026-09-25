@@ -1,62 +1,41 @@
-# FastAPI and core dependencies
+# API
 fastapi>=0.115.0,<1.0
 uvicorn>=0.30.0,<1.0
-pydantic>=2.9.0,<3.0
 pydantic[email]>=2.9.0,<3.0
 pydantic-settings>=2.3.0,<3.0
 python-multipart==0.0.31
 python-dotenv==1.2.2
+websockets==12.0
+httpx==0.25.0
+anyio==3.7.1
 
-# Authentication and security
-# PyJWT replaces python-jose (CVE-2024-33664 — algorithm confusion in python-jose)
+# Auth (PyJWT instead of python-jose: CVE-2024-33664)
 PyJWT>=2.8.0,<3.0
 passlib==1.7.4
 bcrypt==4.0.1
-cryptography>=42.0.0,<45.0
 email-validator==2.1.0
 
-# Database dependencies - your versions
+# Database
 sqlalchemy==2.0.23
 asyncpg==0.29.0
 alembic==1.13.0
 psycopg2-binary==2.9.9
 
-# Redis for session management and rate limiting - your version
+# Redis, background jobs
 redis==5.0.1
-slowapi==0.1.9
-
-# Background processing - your versions
 celery==5.3.4
-kombu==5.3.4
 
-# AI Provider APIs
+# AI providers
 openai>=1.50.0,<2.0
 anthropic>=0.34.0,<1.0
 
-# HTTP client + HTML extraction (URL ingestion)
+# Document ingestion (PDF, DOCX, URLs)
 beautifulsoup4>=4.12.0,<5.0
 lxml>=5.0.0,<6.0
-
-# WebSocket support (from your requirements)
-websockets==12.0
-
-# File Processing Enhancement (Phase 6) - your versions
 pypdf==6.14.2
 python-docx==1.1.0
 pymupdf==1.23.8
 Pillow==12.3.0
 python-magic==0.4.27
 python-magic-bin==0.4.14; platform_system=="Windows"
-clamd==1.0.2
 chardet==5.2.0
-
-# Advanced Security & Monitoring (Phase 8) - your versions
-psutil==5.9.6
-prometheus-client==0.19.0
-aiofiles==23.2.1
-structlog==23.2.0
-click==8.1.7
-APScheduler==3.10.4
-
-httpx==0.25.0
-anyio==3.7.1

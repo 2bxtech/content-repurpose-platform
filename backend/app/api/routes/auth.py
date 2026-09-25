@@ -152,6 +152,17 @@ async def get_current_active_user(
     return current_user
 
 
+async def require_platform_admin(
+    current_user: Annotated[dict, Depends(get_current_active_user)],
+):
+    """Gate operator endpoints whose effects span all tenants."""
+    if (current_user.get("email") or "").lower() not in settings.platform_admin_emails:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Platform admin access required"
+        )
+    return current_user
+
+
 @router.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
 async def register_user(
     user: UserCreate, request: Request, db: AsyncSession = Depends(get_db_session)

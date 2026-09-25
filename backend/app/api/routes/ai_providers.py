@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
 
-from app.api.routes.auth import get_current_active_user
+from app.api.routes.auth import get_current_active_user, require_platform_admin
 from app.services.ai_providers import (
     get_ai_provider_manager,
     ProviderSelectionStrategy,
@@ -70,7 +70,7 @@ class StrategyUpdateRequest(BaseModel):
 
 
 @router.get("/providers/status", response_model=ProviderStatusResponse)
-async def get_provider_status(current_user: dict = Depends(get_current_active_user)):
+async def get_provider_status(current_user: dict = Depends(require_platform_admin)):
     """Get status of all AI providers"""
     manager = get_ai_provider_manager()
     provider_status = manager.get_provider_status()
@@ -91,7 +91,7 @@ async def get_provider_status(current_user: dict = Depends(get_current_active_us
 
 @router.get("/providers/costs", response_model=CostSummaryResponse)
 async def get_cost_summary(
-    hours: int = 24, current_user: dict = Depends(get_current_active_user)
+    hours: int = 24, current_user: dict = Depends(require_platform_admin)
 ):
     """Get cost summary for AI provider usage"""
     manager = get_ai_provider_manager()
@@ -102,7 +102,7 @@ async def get_cost_summary(
 
 @router.post("/providers/test", response_model=ProviderTestResponse)
 async def test_provider(
-    request: ProviderTestRequest, current_user: dict = Depends(get_current_active_user)
+    request: ProviderTestRequest, current_user: dict = Depends(require_platform_admin)
 ):
     """Test a specific AI provider"""
     manager = get_ai_provider_manager()
@@ -152,7 +152,7 @@ async def test_provider(
 
 @router.post("/providers/{provider_name}/validate")
 async def validate_provider(
-    provider_name: str, current_user: dict = Depends(get_current_active_user)
+    provider_name: str, current_user: dict = Depends(require_platform_admin)
 ):
     """Validate API key for a specific provider"""
     manager = get_ai_provider_manager()
@@ -182,7 +182,7 @@ async def validate_provider(
 
 
 @router.post("/providers/validate-all")
-async def validate_all_providers(current_user: dict = Depends(get_current_active_user)):
+async def validate_all_providers(current_user: dict = Depends(require_platform_admin)):
     """Validate API keys for all providers"""
     manager = get_ai_provider_manager()
     results = await manager.validate_all_providers()
@@ -198,7 +198,7 @@ async def validate_all_providers(current_user: dict = Depends(get_current_active
 async def update_provider_config(
     provider_name: str,
     config_update: ProviderConfigUpdate,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(require_platform_admin),
 ):
     """Update configuration for a specific provider"""
     manager = get_ai_provider_manager()
@@ -236,7 +236,7 @@ async def update_provider_config(
 @router.put("/providers/strategy")
 async def update_selection_strategy(
     strategy_update: StrategyUpdateRequest,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(require_platform_admin),
 ):
     """Update provider selection strategy"""
     manager = get_ai_provider_manager()
@@ -279,7 +279,7 @@ async def get_available_models(current_user: dict = Depends(get_current_active_u
 
 @router.post("/providers/{provider_name}/reset-limits")
 async def reset_provider_limits(
-    provider_name: str, current_user: dict = Depends(get_current_active_user)
+    provider_name: str, current_user: dict = Depends(require_platform_admin)
 ):
     """Reset rate limits and usage tracking for a provider"""
     manager = get_ai_provider_manager()
@@ -306,7 +306,7 @@ async def reset_provider_limits(
 
 @router.get("/providers/statistics")
 async def get_provider_statistics(
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(require_platform_admin),
 ):
     """Get detailed statistics for all providers"""
     manager = get_ai_provider_manager()

@@ -6,12 +6,19 @@ Handles user sessions, presence tracking, and message broadcasting.
 import json
 import uuid
 import asyncio
+import logging
 from typing import Dict, List, Set, Any, Optional
 from datetime import datetime, timedelta
 from fastapi import WebSocket
 from pydantic import BaseModel
+import redis.asyncio as aioredis
 
+from app.core.config import settings
 from app.services.redis_service import redis_service
+
+logger = logging.getLogger(__name__)
+
+REDIS_CHANNEL = "websocket:broadcast"
 
 
 class UserPresence(BaseModel):
@@ -57,61 +64,64 @@ class ConnectionManager:
         # Connection metadata: connection_id -> UserPresence
         self.connection_metadata: Dict[str, UserPresence] = {}
 
-        # Redis pub/sub channels
+        # Redis pub/sub fan-out (see start_redis_listener)
+        self._redis: Optional[aioredis.Redis] = None
         self.pubsub = None
-        self.redis_listener_task = None
+        self.redis_listener_task: Optional[asyncio.Task] = None
 
     async def start_redis_listener(self):
-        """Start Redis pub/sub listener for distributed messaging"""
-        if not redis_service.is_connected():
+        """Subscribe to the fan-out channel so messages published by any process
+        (other API replicas, Celery workers) reach sockets connected to this one."""
+        if self.redis_listener_task:
             return
-
+        self._redis = aioredis.from_url(settings.get_redis_url(), decode_responses=True)
+        self.pubsub = self._redis.pubsub()
         try:
-            self.pubsub = redis_service.redis_client.pubsub()
-            self.pubsub.subscribe("websocket:broadcast")  # Remove await here
-
-            self.redis_listener_task = asyncio.create_task(self._redis_listener())
+            await self.pubsub.subscribe(REDIS_CHANNEL)
         except Exception as e:
-            print(f"Failed to start Redis listener: {e}")
+            logger.warning("WebSocket fan-out disabled, Redis unavailable: %s", e)
+            await self._close_redis()
+            return
+        self.redis_listener_task = asyncio.create_task(self._redis_listener())
 
     async def stop_redis_listener(self):
-        """Stop Redis pub/sub listener"""
         if self.redis_listener_task:
             self.redis_listener_task.cancel()
             try:
                 await self.redis_listener_task
             except asyncio.CancelledError:
                 pass
+            self.redis_listener_task = None
+        await self._close_redis()
 
+    async def _close_redis(self):
         if self.pubsub:
-            await self.pubsub.unsubscribe("websocket:broadcast")
-            await self.pubsub.close()
+            await self.pubsub.aclose()
+            self.pubsub = None
+        if self._redis:
+            await self._redis.aclose()
+            self._redis = None
 
     async def _redis_listener(self):
-        """Listen for Redis pub/sub messages"""
-        try:
-            # Use get_message() in a loop instead of async for
-            while True:
-                try:
-                    message = self.pubsub.get_message(timeout=1.0)
-                    if message and message["type"] == "message":
-                        try:
-                            data = json.loads(message["data"])
-                            ws_message = WebSocketMessage(**data)
-                            await self._handle_redis_message(ws_message)
-                        except Exception as e:
-                            print(f"Error processing Redis message: {e}")
-                    await asyncio.sleep(0.01)  # Small delay to prevent tight loop
-                except Exception as e:
-                    print(f"Error getting Redis message: {e}")
-                    await asyncio.sleep(1)  # Wait before retrying
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            print(f"Redis listener error: {e}")
+        while True:
+            try:
+                async for message in self.pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    try:
+                        await self._handle_redis_message(
+                            WebSocketMessage(**json.loads(message["data"]))
+                        )
+                    except Exception:
+                        logger.exception("Dropping malformed fan-out message")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Redis fan-out listener error, retrying: %s", e)
+                await asyncio.sleep(1)
 
     async def _handle_redis_message(self, message: WebSocketMessage):
-        """Handle message received from Redis pub/sub"""
+        """Deliver a fan-out message to the matching sockets on this process."""
         if message.target == "broadcast":
             await self.broadcast_to_all(message)
         elif message.target == "workspace" and message.target_id:
@@ -167,8 +177,8 @@ class ConnectionManager:
             },
         )
 
-        print(
-            f"WebSocket connected: {connection_id} (user: {user_id}, workspace: {workspace_id})"
+        logger.info(
+            "WebSocket connected: %s (user %s, workspace %s)", connection_id, user_id, workspace_id
         )
         return connection_id
 
@@ -209,16 +219,16 @@ class ConnectionManager:
                 {"user_id": user_id, "disconnected_at": datetime.utcnow().isoformat()},
             )
 
-        print(f"WebSocket disconnected: {connection_id}")
+        logger.info("WebSocket disconnected: %s", connection_id)
 
     async def send_personal_message(
         self, message: WebSocketMessage, websocket: WebSocket
     ):
         """Send message to a specific WebSocket connection"""
         try:
-            await websocket.send_text(json.dumps(message.dict(), default=str))
+            await websocket.send_text(json.dumps(message.model_dump(), default=str))
         except Exception as e:
-            print(f"Error sending personal message: {e}")
+            logger.debug("Dropping message to closed socket: %s", e)
 
     async def send_to_connection(self, connection_id: str, message: WebSocketMessage):
         """Send message to specific connection"""
@@ -257,18 +267,28 @@ class ConnectionManager:
         )
         await self.broadcast_to_workspace(workspace_id, message)
 
+    async def fan_out(self, message: WebSocketMessage):
+        """Deliver a targeted message to every API process.
+
+        With the Redis listener running, publish and let each process (including
+        this one) deliver to its own sockets; otherwise deliver locally.
+        """
+        if self.redis_listener_task and redis_service.is_connected():
+            await self.publish_to_redis(message)
+        else:
+            await self._handle_redis_message(message)
+
     async def publish_to_redis(self, message: WebSocketMessage):
         """Publish message to Redis for distributed broadcasting"""
         if not redis_service.is_connected():
             return
 
         try:
-            # Use synchronous publish, not async
             redis_service.redis_client.publish(
-                "websocket:broadcast", json.dumps(message.dict(), default=str)
+                REDIS_CHANNEL, json.dumps(message.model_dump(), default=str)
             )
         except Exception as e:
-            print(f"Error publishing to Redis: {e}")
+            logger.warning("Error publishing to Redis: %s", e)
 
     def get_workspace_presence(self, workspace_id: str) -> List[UserPresence]:
         """Get list of users present in a workspace"""
