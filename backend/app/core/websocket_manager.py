@@ -109,6 +109,7 @@ class ConnectionManager:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._subscribed = False  # fall back to local delivery immediately
                 logger.warning("Redis fan-out unavailable, retrying in 2s: %s", e)
                 await asyncio.sleep(2)
             finally:

@@ -56,7 +56,15 @@ def get_user_by_id(user_id: uuid.UUID):
 
 async def get_db_user(db: AsyncSession, email: str):
     """Get user by email from database"""
-    stmt = select(UserDB).where(func.lower(UserDB.email) == email.strip().lower())
+    # Case-insensitive, but an exact match wins: accounts created before emails were
+    # normalised may differ only by case, and each must still be able to log in.
+    email = email.strip()
+    stmt = (
+        select(UserDB)
+        .where(func.lower(UserDB.email) == email.lower())
+        .order_by((UserDB.email == email).desc(), UserDB.created_at)
+        .limit(1)
+    )
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 

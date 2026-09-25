@@ -32,7 +32,15 @@ def run_async(coro: Awaitable[T]) -> T:
     if _loop is None or _loop.is_closed():
         _loop = asyncio.new_event_loop()
         asyncio.set_event_loop(_loop)
-    return _loop.run_until_complete(coro)
+    task = _loop.create_task(coro)
+    try:
+        return _loop.run_until_complete(task)
+    except BaseException:
+        # Interrupted from outside the loop (e.g. Celery's soft time limit fires while
+        # awaiting I/O): cancel and drain the task so it can't resume during the next one.
+        task.cancel()
+        _loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        raise
 
 
 def _get_engine() -> AsyncEngine:

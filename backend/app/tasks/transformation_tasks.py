@@ -6,6 +6,7 @@ the API), runs the shared executor, and publishes progress events to Redis,
 which every API replica relays to the owner's WebSocket connections.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -81,6 +82,10 @@ async def _process(transformation_id: uuid.UUID, workspace_id: uuid.UUID) -> Dic
             transformation = await execute_transformation(
                 db, transformation, document.extracted_text if document else ""
             )
+        except asyncio.CancelledError:
+            # Time limit hit mid-call (see run_async): record it, then let it propagate.
+            await finish(db, transformation, error="Timed out while processing")
+            raise
         except Exception:
             # Anything the executor didn't handle (DB errors, bugs): fail the row
             # rather than leave the client polling a PROCESSING job.
