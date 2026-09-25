@@ -8,7 +8,7 @@ import { AuthProvider } from './context/AuthContext';
 import { CustomThemeProvider } from './context/ThemeContext';
 import { NotificationProvider } from './context/NotificationContext';
 import { AccessibilityProvider } from './context/AccessibilityProvider';
-// import { WebSocketProvider } from './context/WebSocketContext'; // Will integrate in Session 2
+import { RealtimeProvider } from './context/WebSocketContext';
 
 // Enhanced components
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -28,7 +28,6 @@ import DocumentDetail from './pages/DocumentDetail';
 import TransformationCreate from './pages/TransformationCreate';
 import TransformationDetail from './pages/TransformationDetail';
 import Presets from './pages/Presets';
-// import AdminDashboard from './pages/AdminDashboard'; // Will create this next
 
 // Create a client for React Query
 const queryClient = new QueryClient({
@@ -48,7 +47,7 @@ const App: React.FC = () => {
         <AccessibilityProvider>
           <CustomThemeProvider>
             <AuthProvider>
-              {/* WebSocket provider with auth integration - will be enhanced */}
+              <RealtimeProvider>
               <NotificationProvider>
                 <Router>
                   <NavBar />
@@ -75,16 +74,6 @@ const App: React.FC = () => {
                         </ProtectedRoute>
                       }
                     />
-                    {/* Commented out until we create AdminDashboard
-                    <Route
-                      path="/admin"
-                      element={
-                        <ProtectedRoute>
-                          <AdminDashboard />
-                        </ProtectedRoute>
-                      }
-                    />
-                    */}
                     <Route
                       path="/documents/new/text"
                       element={
@@ -156,6 +145,7 @@ const App: React.FC = () => {
                 </Container>
               </Router>
             </NotificationProvider>
+              </RealtimeProvider>
           </AuthProvider>
         </CustomThemeProvider>
       </AccessibilityProvider>

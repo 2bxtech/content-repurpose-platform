@@ -1,7 +1,8 @@
 import React, { createContext, useContext, ReactNode } from 'react';
 import { useWebSocket, WebSocketState, WebSocketMessage } from '../services/websocketService';
+import { useAuth } from './AuthContext';
+import { getWebSocketUrl, getWorkspaceIdFromToken } from '../utils/realtime';
 
-// WebSocket context interface
 interface WebSocketContextType {
   connectionState: WebSocketState;
   isConnected: boolean;
@@ -16,43 +17,27 @@ interface WebSocketContextType {
   clearTransformationUpdates: () => void;
 }
 
-// Create context
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
-// WebSocket provider props
-interface WebSocketProviderProps {
-  children: ReactNode;
-  token: string | null;
-  workspaceId: string | null;
-}
-
-// WebSocket provider component
-export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
-  children,
-  token,
-  workspaceId
-}) => {
-  const webSocketState = useWebSocket(token, workspaceId, {
-    baseUrl: process.env.REACT_APP_WS_URL || 'ws://localhost:8000/api/ws',
+/**
+ * Opens one socket per signed-in session. The server pins it to the workspace in
+ * the access token and pushes transformation progress from the Celery worker.
+ */
+export const RealtimeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
+  // Re-read on user change so login/logout opens/closes the socket.
+  const token = user ? localStorage.getItem('token') : null;
+  const webSocketState = useWebSocket(token, getWorkspaceIdFromToken(token), {
+    baseUrl: getWebSocketUrl(),
     reconnectInterval: 5000,
     maxReconnectAttempts: 5,
-    pingInterval: 30000
+    pingInterval: 30000,
   });
 
-  return (
-    <WebSocketContext.Provider value={webSocketState}>
-      {children}
-    </WebSocketContext.Provider>
-  );
+  return <WebSocketContext.Provider value={webSocketState}>{children}</WebSocketContext.Provider>;
 };
 
-// Hook to use WebSocket context
-export const useWebSocketContext = (): WebSocketContextType => {
-  const context = useContext(WebSocketContext);
-  if (!context) {
-    throw new Error('useWebSocketContext must be used within a WebSocketProvider');
-  }
-  return context;
-};
+/** Realtime state, or null outside a RealtimeProvider (callers fall back to polling). */
+export const useRealtime = (): WebSocketContextType | null => useContext(WebSocketContext);
 
 export default WebSocketContext;
