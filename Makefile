@@ -29,6 +29,7 @@ logs: ## Tail api + worker logs
 install: ## Create venv and install backend + frontend dependencies
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install -r backend/requirements-dev.txt
+	$(BIN)/pre-commit install
 	cd frontend && npm ci
 
 migrate: ## Apply Alembic migrations to the local database
