@@ -194,3 +194,18 @@ class TestContentSniffing:
         script = b"#!/bin/sh\necho not really a pdf\n"
         with pytest.raises(ValueError, match="doesn't match its .pdf extension"):
             await processor._validate_file_security(script, "report.pdf")
+
+
+class TestTextUploads:
+    """Text files are checked for being text, not against a MIME list."""
+
+    @pytest.fixture
+    def processor(self):
+        return FileProcessor()
+
+    async def test_json_in_a_txt_file_is_accepted(self, processor):
+        await processor._validate_file_security(b'{"title": "notes", "items": [1, 2]}\n', "data.txt")
+
+    async def test_binary_in_a_txt_file_is_rejected(self, processor):
+        with pytest.raises(ValueError, match="binary"):
+            await processor._validate_file_security(b"PK\x03\x04\x00\x00binary", "notes.txt")

@@ -205,22 +205,27 @@ class FileProcessor:
                         f"Dangerous file signature detected: {description}"
                     )
 
-        # Content sniffing: the bytes must look like the extension claims (a script
+        # Text uploads are whatever text they are (JSON, CSV, code...), and libmagic
+        # labels many of those application/*, so they're checked for being text at
+        # all rather than against a MIME list.
+        if file_ext in ("txt", "md"):
+            if b"\x00" in content[:8192]:
+                raise ValueError(f"File content is binary, not a .{file_ext} text file")
+
+        # Binary formats: the bytes must look like the extension claims (a script
         # renamed to .pdf is rejected). Only a failure of the sniffer itself is
         # tolerated; a detected mismatch is a validation error.
-        if HAS_MAGIC:
+        elif HAS_MAGIC:
             try:
                 detected_mime = magic.from_buffer(content, mime=True)
             except Exception as e:
                 detected_mime = None
                 logger.warning(f"MIME detection failed: {e}")
 
-            if detected_mime:
-                text_ok = file_ext in ("txt", "md") and detected_mime.startswith("text/")
-                if not text_ok and detected_mime not in self.supported_types[file_ext]:
-                    raise ValueError(
-                        f"File content ({detected_mime}) doesn't match its .{file_ext} extension"
-                    )
+            if detected_mime and detected_mime not in self.supported_types[file_ext]:
+                raise ValueError(
+                    f"File content ({detected_mime}) doesn't match its .{file_ext} extension"
+                )
 
         # Basic malicious pattern detection
         content_lower = content.lower()
