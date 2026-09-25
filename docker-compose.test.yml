@@ -1,0 +1,123 @@
+# Docker Compose configuration for automated testing
+# Isolated test environment with dedicated ports and databases
+
+services:
+  # Test PostgreSQL Database
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: content-repurpose-postgres-test
+    restart: "no"
+    environment:
+      POSTGRES_DB: content_repurpose_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d content_repurpose_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - test-network
+
+  # Test Redis for Session Management and Celery
+  redis-test:
+    image: redis:7-alpine
+    container_name: content-repurpose-redis-test
+    restart: "no"
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_test_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - test-network
+
+  # Test API Service
+  api-test:
+    build: 
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: content-repurpose-api-test
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:test_password@postgres-test:5432/content_repurpose_test
+      DATABASE_URL_SYNC: postgresql+psycopg2://postgres:test_password@postgres-test:5432/content_repurpose_test
+      REDIS_URL: redis://redis-test:6379/1
+      REDIS_HOST: redis-test
+      REDIS_PORT: 6379
+      REDIS_DB: 1
+      ENVIRONMENT: testing
+      DEBUG: "true"
+      SECRET_KEY: test_secret_key_for_testing_purposes_only_32_chars_minimum
+      REFRESH_SECRET_KEY: test_refresh_secret_key_for_testing_purposes_only_32_chars_minimum
+      CELERY_TASK_ALWAYS_EAGER: "true"
+      AI_PROVIDER: mock
+      OPENAI_API_KEY: test-key
+      ANTHROPIC_API_KEY: test-key
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - test-network
+
+  # Test Celery Worker (for integration testing)
+  celery-worker-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: content-repurpose-celery-worker-test
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:test_password@postgres-test:5432/content_repurpose_test
+      REDIS_URL: redis://redis-test:6379/1
+      REDIS_HOST: redis-test
+      REDIS_PORT: 6379
+      REDIS_DB: 1
+      ENVIRONMENT: testing
+      DEBUG: "true"
+      SECRET_KEY: test_secret_key_for_testing_purposes_only_32_chars_minimum
+      REFRESH_SECRET_KEY: test_refresh_secret_key_for_testing_purposes_only_32_chars_minimum
+      AI_PROVIDER: mock
+      OPENAI_API_KEY: test-key
+      ANTHROPIC_API_KEY: test-key
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    networks:
+      - test-network
+
+volumes:
+  postgres_test_data:
+    driver: local
+  redis_test_data:
+    driver: local
+
+networks:
+  test-network:
+    driver: bridge

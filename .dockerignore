@@ -1,0 +1,38 @@
+# Never bake environment files into the image.
+# Railway (and any real deploy target) inject config as real env vars.
+# A committed/dev .env here shadows those (e.g. stale DATABASE_URL_SYNC),
+# and leaks dev secrets into the image layer.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python cruft
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# VCS / IDE
+.git/
+.github/
+.vscode/
+.idea/
+
+# Frontend + node (backend image doesn't need these)
+frontend/
+node_modules/
+
+# Test + docs + local tooling not needed at runtime
+tests/
+archive/
+*.md
+*.diff
+*.log
+docker-compose*.yml

@@ -1,0 +1,92 @@
+# FastAPI and core dependencies
+fastapi>=0.115.0,<1.0
+uvicorn>=0.30.0,<1.0
+pydantic>=2.9.0,<3.0
+pydantic[email]>=2.9.0,<3.0
+pydantic-settings>=2.3.0,<3.0
+python-multipart==0.0.31
+python-dotenv==1.2.2
+
+# Authentication and security
+# PyJWT replaces python-jose (CVE-2024-33664 — algorithm confusion in python-jose)
+PyJWT>=2.8.0,<3.0
+passlib==1.7.4
+bcrypt==4.0.1
+cryptography>=42.0.0,<45.0
+email-validator==2.1.0
+
+# Database dependencies - your versions
+sqlalchemy==2.0.23
+asyncpg==0.29.0
+alembic==1.13.0
+psycopg2-binary==2.9.9
+
+# Redis for session management and rate limiting - your version
+redis==5.0.1
+slowapi==0.1.9
+
+# Background processing - your versions
+celery==5.3.4
+kombu==5.3.4
+
+# AI Provider APIs
+openai>=1.50.0,<2.0
+anthropic>=0.34.0,<1.0
+
+# HTTP client + HTML extraction (URL ingestion)
+httpx>=0.25.0,<1.0
+beautifulsoup4>=4.12.0,<5.0
+lxml>=5.0.0,<6.0
+
+# WebSocket support (from your requirements)
+websockets==12.0
+
+# File Processing Enhancement (Phase 6) - your versions
+pypdf==6.14.2
+python-docx==1.1.0
+pymupdf==1.23.8
+Pillow==12.3.0
+python-magic==0.4.27
+python-magic-bin==0.4.14; platform_system=="Windows"
+clamd==1.0.2
+chardet==5.2.0
+
+# Advanced Security & Monitoring (Phase 8) - your versions
+psutil==5.9.6
+prometheus-client==0.19.0
+aiofiles==23.2.1
+structlog==23.2.0
+click==8.1.7
+APScheduler==3.10.4
+
+# Testing dependencies - your versions
+pytest==9.0.3
+httpx==0.25.0
+anyio==3.7.1
+
+# Additional packages I included that you might want:
+# hiredis==2.2.3  # Better Redis performance
+# flower==2.0.1  # Celery monitoring UI
+# python-docx==1.1.0  # Already in your list
+# openpyxl==3.1.2  # Excel file support
+# azure-openai==1.0.0  # Azure OpenAI support
+# aiohttp==3.9.1  # Additional HTTP client
+# sentry-sdk[fastapi]==1.38.0  # Error tracking
+# aiocache==0.12.2  # Async caching
+# validators==0.22.0  # Data validation utilities
+# rich==13.7.0  # Rich terminal output
+# typer==0.9.0  # CLI framework
+# safety==2.3.5  # Security scanning
+# bandit==1.7.5  # Security linting
+
+# Development tools (optional)
+# black==23.11.0  # Code formatting
+# isort==5.12.0  # Import sorting
+# flake8==6.1.0  # Linting
+# mypy==1.7.1  # Type checking
+# pytest-asyncio==0.21.1  # Async testing
+# pytest-mock==3.12.0  # Mocking
+# pytest-cov==4.1.0  # Coverage
+
+# Production deployment
+# gunicorn==21.2.0  # WSGI server
