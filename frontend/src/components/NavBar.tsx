@@ -224,25 +224,6 @@ const NavBar: React.FC = () => {
               </Button>
             </Tooltip>
 
-            {/* Admin Dashboard Link (temporarily disabled until we create the page) */}
-            {/*
-            <Tooltip title="Admin Dashboard">
-              <Button 
-                color="inherit" 
-                component={RouterLink} 
-                to="/admin"
-                startIcon={<AdminIcon />}
-                sx={{ 
-                  color: 'text.primary',
-                  '&:hover': {
-                    backgroundColor: 'action.hover'
-                  }
-                }}
-              >
-                Admin
-              </Button>
-            </Tooltip>
-            */}
 
             {/* User Menu */}
             <Box sx={{ display: 'flex', alignItems: 'center', ml: 2 }}>

@@ -14,6 +14,8 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import SendIcon from '@mui/icons-material/Send';
 import ReactMarkdown from 'react-markdown';
 import { getTransformation, createTransformation, refineTransformation } from '../services/transformationService';
+import { useRealtime } from '../context/WebSocketContext';
+import { isTerminalUpdateFor } from '../utils/realtime';
 import { getDocument } from '../services/documentService';
 import { getErrorMessage } from '../utils/apiError';
 import { Transformation, TransformationStatus, Document } from '../types';
@@ -91,6 +93,17 @@ const TransformationDetail: React.FC = () => {
     setIsPolling(true);
     pollingTimer.current = setTimeout(pollTransformation, 5000);
   }, [pollTransformation]);
+
+  // The worker pushes completion over the WebSocket; refresh immediately instead of
+  // waiting for the next poll. Polling stays on as the fallback when offline.
+  const realtime = useRealtime();
+  const latestUpdate = realtime?.transformationUpdates[realtime.transformationUpdates.length - 1];
+  useEffect(() => {
+    if (isTerminalUpdateFor(latestUpdate, id)) {
+      if (pollingTimer.current) clearTimeout(pollingTimer.current);
+      pollTransformation();
+    }
+  }, [latestUpdate, id, pollTransformation]);
 
   useEffect(() => {
     const fetchData = async () => {

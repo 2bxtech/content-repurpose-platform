@@ -201,12 +201,9 @@ export class WebSocketService {
 
   // Handle incoming messages
   private handleMessage(message: WebSocketMessage): void {
-    console.log('WebSocket message received:', message);
-
     // Route messages to specific handlers
     switch (message.type) {
       case 'connection_established':
-        console.log('WebSocket connection established:', message.data);
         break;
 
       case 'pong':
@@ -235,7 +232,7 @@ export class WebSocketService {
         break;
 
       default:
-        console.log('Unknown WebSocket message type:', message.type);
+        break;
     }
 
     // Call general message handler
