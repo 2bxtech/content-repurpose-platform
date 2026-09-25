@@ -8,7 +8,6 @@
 x-app-env: &app-env
   DATABASE_URL: postgresql+asyncpg://${DATABASE_USER:-postgres}:${DATABASE_PASSWORD:-postgres_dev_password}@postgres:5432/${DATABASE_NAME:-content_repurpose}
   REDIS_URL: redis://redis:6379/0
-  REDIS_HOST: redis
   ENVIRONMENT: development
   DEBUG: "true"
   SECRET_KEY: ${SECRET_KEY:-local-dev-access-token-signing-key-not-for-prod}

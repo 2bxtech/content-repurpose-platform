@@ -3,10 +3,9 @@ Production Transformations Router
 Fixed to eliminate SQLAlchemy greenlet errors with proper async patterns
 """
 
-import time
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, update
+from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 from datetime import datetime
 import uuid
@@ -23,15 +22,17 @@ from app.models.transformation import (
 )
 from app.db.models.transformation import Transformation as TransformationDB
 from app.db.models.document import Document as DocumentDB
-from app.db.models.workspace import Workspace
 from app.db.models.transformation_preset import TransformationPreset as TransformationPresetDB
 from app.db.models.document import DocumentStatus
 from app.api.routes.auth import get_current_active_user
 from app.api.routes.workspaces import get_current_workspace_context
 from app.core.database import get_db_session
+from app.core.config import settings
 from app.services.transformation_prompt import get_transformation_prompt, CONTENT_REPURPOSE_SYSTEM_PROMPT
-from app.services.ai_providers import get_ai_provider_manager, AIProviderError
-import traceback
+from app.services.ai_providers import get_ai_provider_manager
+from app.services.transformation_runner import execute_transformation
+from app.tasks.transformation_tasks import process_transformation_task
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,9 @@ async def create_transformation(
             .where(
                 and_(
                     DocumentDB.id == transformation.document_id,
-                    DocumentDB.user_id == uuid.UUID(current_user["id"]),  # Explicit UUID conversion
-                    DocumentDB.deleted_at.is_(None)
+                    DocumentDB.workspace_id == workspace_id,
+                    DocumentDB.user_id == user_id,
+                    DocumentDB.deleted_at.is_(None),
                 )
             )
             .options(
@@ -144,47 +146,12 @@ async def create_transformation(
         await db.commit()
         await db.refresh(transformation_db)
 
-        # Run AI transformation
-        content = (document.extracted_text or "").strip()
-        if not content:
-            transformation_db.status = TransformationStatus.FAILED
-            transformation_db.error_message = "Document has no extractable text content"
-            transformation_db.updated_at = datetime.utcnow()
-            await db.commit()
-            await db.refresh(transformation_db)
+        if settings.TRANSFORMATION_EXECUTION == "inline":
+            # Local development without a worker: run in-request.
+            await execute_transformation(db, transformation_db, document.extracted_text or "")
         else:
-            try:
-                t_start = time.time()
-                prompt = get_transformation_prompt(
-                    transformation.transformation_type, content, final_parameters
-                )
-                manager = get_ai_provider_manager()
-                ai_response = await manager.generate_text(
-                    prompt=prompt,
-                    system_prompt=CONTENT_REPURPOSE_SYSTEM_PROMPT,
-                )
-                elapsed = int(time.time() - t_start)
+            await _enqueue(db, transformation_db)
 
-                transformation_db.result = ai_response.content
-                transformation_db.status = TransformationStatus.COMPLETED
-                transformation_db.ai_provider = ai_response.provider
-                transformation_db.tokens_used = ai_response.usage_metrics.total_tokens
-                transformation_db.input_tokens = ai_response.usage_metrics.input_tokens
-                transformation_db.output_tokens = ai_response.usage_metrics.output_tokens
-                transformation_db.ai_cost = ai_response.usage_metrics.total_cost
-                transformation_db.processing_time_seconds = elapsed
-                transformation_db.updated_at = datetime.utcnow()
-                await db.commit()
-                await db.refresh(transformation_db)
-
-            except AIProviderError as e:
-                logger.error(f"AI provider error for transformation {transformation_db.id}: {e}")
-                transformation_db.status = TransformationStatus.FAILED
-                transformation_db.error_message = f"AI provider error: {str(e)}"
-                transformation_db.updated_at = datetime.utcnow()
-                await db.commit()
-                await db.refresh(transformation_db)
-        
         # Return response model
         return Transformation(
             id=uuid.UUID(str(transformation_db.id)),
@@ -195,21 +162,41 @@ async def create_transformation(
             status=transformation_db.status,
             result=transformation_db.result,
             error_message=transformation_db.error_message,
-            task_id=None,
+            task_id=transformation_db.task_id,
             created_at=transformation_db.created_at,
             updated_at=transformation_db.updated_at,
         )
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error creating transformation: {str(e)}")
+    except Exception:
+        logger.exception("Error creating transformation")
         if db:
             await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create transformation: {str(e)}"
+            detail="Failed to create transformation",
         )
+
+
+async def _enqueue(db: AsyncSession, transformation_db: TransformationDB) -> None:
+    """Hand the transformation to a Celery worker; the client polls or listens on
+    the WebSocket for completion. Publishing is blocking I/O, so it runs off-loop."""
+    try:
+        task = await run_in_threadpool(
+            process_transformation_task.delay,
+            str(transformation_db.id),
+            str(transformation_db.workspace_id),
+        )
+    except Exception:
+        logger.exception("Could not enqueue transformation %s", transformation_db.id)
+        transformation_db.status = TransformationStatus.FAILED
+        transformation_db.error_message = "Background queue unavailable, please retry"
+    else:
+        transformation_db.task_id = task.id
+    transformation_db.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(transformation_db)
 
 
 async def _create_transformation_in_memory(transformation: TransformationCreate, user_id: uuid.UUID) -> Transformation:
@@ -317,39 +304,8 @@ async def quick_transform(
         await db.commit()
         await db.refresh(transformation_db)
 
-        # 4. Run AI on the content (outside flush transaction)
-        content = request.content.strip()
-        try:
-            t_start = time.time()
-            prompt = get_transformation_prompt(
-                request.transformation_type, content, final_parameters
-            )
-            manager = get_ai_provider_manager()
-            ai_response = await manager.generate_text(
-                prompt=prompt,
-                system_prompt=CONTENT_REPURPOSE_SYSTEM_PROMPT,
-            )
-            elapsed = int(time.time() - t_start)
-
-            transformation_db.result = ai_response.content
-            transformation_db.status = TransformationStatus.COMPLETED
-            transformation_db.ai_provider = ai_response.provider
-            transformation_db.tokens_used = ai_response.usage_metrics.total_tokens
-            transformation_db.input_tokens = ai_response.usage_metrics.input_tokens
-            transformation_db.output_tokens = ai_response.usage_metrics.output_tokens
-            transformation_db.ai_cost = ai_response.usage_metrics.total_cost
-            transformation_db.processing_time_seconds = elapsed
-            transformation_db.updated_at = datetime.utcnow()
-            await db.commit()
-            await db.refresh(transformation_db)
-
-        except AIProviderError as e:
-            logger.error(f"Quick transform AI error: {e}")
-            transformation_db.status = TransformationStatus.FAILED
-            transformation_db.error_message = f"AI provider error: {str(e)}"
-            transformation_db.updated_at = datetime.utcnow()
-            await db.commit()
-            await db.refresh(transformation_db)
+        # 4. Interactive endpoint: run the AI call in-request (outside the insert transaction)
+        transformation_db = await execute_transformation(db, transformation_db, request.content)
 
         return Transformation(
             id=uuid.UUID(str(transformation_db.id)),
@@ -367,29 +323,14 @@ async def quick_transform(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error(f"Quick transform error: {e}")
+        logger.exception("Quick transform failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Quick transform failed: {str(e)}",
+            detail="Quick transform failed",
         )
 
-
-@router.get("/debug/workspace-test")
-async def debug_workspace_test():
-    """Debug endpoint to test Workspace model access"""
-    try:
-        logger.info("Testing Workspace class access...")
-        logger.info(f"Workspace: {Workspace}")
-        logger.info(f"Workspace.__name__: {Workspace.__name__}")
-        logger.info(f"Workspace.__table__.name: {Workspace.__table__.name}")
-        logger.info(f"Workspace columns: {[c.name for c in Workspace.__table__.columns]}")
-        return {"status": "success", "message": "Workspace model accessible"}
-    except Exception as e:
-        logger.error(f"Error accessing Workspace: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return {"status": "error", "message": str(e)}
 
 @router.get("", response_model=TransformationList)
 @router.get("/", response_model=TransformationList, include_in_schema=False)
@@ -587,34 +528,9 @@ async def refine_transformation(
     await db.commit()
     await db.refresh(new_db)
 
-    try:
-        t_start = time.time()
-        manager = get_ai_provider_manager()
-        ai_response = await manager.generate_text(
-            prompt=refined_prompt,
-            system_prompt=CONTENT_REPURPOSE_SYSTEM_PROMPT,
-        )
-        elapsed = int(time.time() - t_start)
-
-        new_db.result = ai_response.content
-        new_db.status = TransformationStatus.COMPLETED
-        new_db.ai_provider = ai_response.provider
-        new_db.tokens_used = ai_response.usage_metrics.total_tokens
-        new_db.input_tokens = ai_response.usage_metrics.input_tokens
-        new_db.output_tokens = ai_response.usage_metrics.output_tokens
-        new_db.ai_cost = ai_response.usage_metrics.total_cost
-        new_db.processing_time_seconds = elapsed
-        new_db.updated_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(new_db)
-
-    except AIProviderError as e:
-        logger.error(f"Refine AI error for {transformation_id}: {e}")
-        new_db.status = TransformationStatus.FAILED
-        new_db.error_message = f"AI provider error: {str(e)}"
-        new_db.updated_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(new_db)
+    new_db = await execute_transformation(
+        db, new_db, document.extracted_text, prompt=refined_prompt
+    )
 
     return Transformation(
         id=uuid.UUID(str(new_db.id)),
@@ -673,53 +589,7 @@ async def get_available_transformation_types(
     }
 
 # Debug endpoints (simplified)
-@router.get("/debug/user-stats")
-async def get_user_transformation_stats(
-    current_user: dict = Depends(get_current_active_user),
-    workspace_context: dict = Depends(get_current_workspace_context),
-    db: AsyncSession = Depends(get_db_session),
-):
-    """Get transformation stats with proper async queries"""
-    try:
-        user_id = uuid.UUID(current_user["id"])
-        workspace_id = workspace_context["workspace_id"]
-        
-        # Count by status using explicit async query
-        status_stmt = (
-            select(
-                TransformationDB.status,
-                func.count(TransformationDB.id).label('count')
-            )
-            .where(
-                and_(
-                    TransformationDB.workspace_id == workspace_id,
-                    TransformationDB.user_id == user_id,
-                    TransformationDB.deleted_at.is_(None),
-                )
-            )
-            .group_by(TransformationDB.status)
-        )
-        
-        status_result = await db.execute(status_stmt)
-        status_counts = {row.status.value: row.count for row in status_result}
-        
-        return {
-            "user_id": str(user_id),
-            "workspace_id": str(workspace_id),
-            "transformations_by_status": status_counts,
-            "mode": "database"
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting transformation stats: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get transformation statistics"
-        )
+
 
 # CORS OPTIONS handlers
-@router.options("/")
-@router.options("/{path:path}")
-async def handle_cors_options():
-    """Handle CORS preflight requests"""
-    return {"message": "OK"}
+

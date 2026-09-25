@@ -48,7 +48,7 @@ class DatabaseConfig:
             'pool_timeout': 30,
             'pool_recycle': 3600,
             'pool_pre_ping': True,
-            'echo': settings.DEBUG,
+            'echo': settings.SQL_ECHO,
         }
 
 def _initialize_engine():
