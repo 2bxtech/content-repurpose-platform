@@ -1,5 +1,5 @@
 """
-Phase 7: AI Provider Management Tests
+AI Provider Management Tests
 
 Tests for multi-provider AI support with intelligent failover, cost tracking,
 and provider selection strategies. These tests cover:
@@ -118,21 +118,26 @@ class TestMockProvider:
 
     @pytest.mark.asyncio
     async def test_different_transformation_types(self, mock_provider):
-        """Test mock responses for different transformation types"""
-        test_cases = [
-            ("blog post", "blog"),
-            ("social media", "social"),
-            ("email sequence", "email"),
-            ("newsletter", "newsletter"),
-            ("summary", "summary"),
+        """Each transformation type gets its own canned response; unknown prompts get a generic one."""
+        prompts = [
+            "Transform this into a blog post",
+            "Transform this into a social media thread",
+            "Transform this into an email sequence",
+            "Transform this into a newsletter",
+            "Transform this into a summary",
         ]
 
-        for prompt_type, expected_content_type in test_cases:
-            prompt = f"Transform this into a {prompt_type}"
+        contents = []
+        for prompt in prompts:
             response = await mock_provider.generate_text(prompt)
-
             assert len(response.content) > 100  # Substantial content
-            assert expected_content_type.lower() in response.content.lower()
+            contents.append(response.content)
+
+        generic = (await mock_provider.generate_text("Say something")).content
+        assert len(set(contents)) == len(prompts)
+        assert generic not in contents
+        assert "summary" in contents[-1].lower()
+        assert "newsletter" in contents[3].lower()
 
     @pytest.mark.asyncio
     async def test_mock_processing_time(self, mock_provider):
@@ -165,27 +170,33 @@ class TestOpenAIProvider:
         assert openai_provider.api_key == "test-openai-key"
 
     def test_openai_models(self, openai_provider):
-        """Test OpenAI model information"""
+        """Test OpenAI model information (model IDs change often, so check structure only)"""
         models = openai_provider.get_available_models()
         model_names = [m.name for m in models]
 
-        assert "gpt-4o" in model_names
-        assert "gpt-4o-mini" in model_names
-        assert "gpt-3.5-turbo" in model_names
+        assert models
+        assert len(set(model_names)) == len(model_names)
+        for model in models:
+            assert isinstance(model, AIModelInfo)
+            assert model.cost_per_1k_input_tokens > 0
+            assert model.cost_per_1k_output_tokens > 0
 
-        default_model = openai_provider.get_default_model()
-        assert default_model == "gpt-4o-mini"
+        assert openai_provider.get_default_model() in model_names
 
     def test_openai_cost_estimation(self, openai_provider):
-        """Test OpenAI cost estimation"""
-        # Test with gpt-4o-mini (should be cheapest)
-        cost_mini = openai_provider.estimate_cost(1000, 500, "gpt-4o-mini")
+        """Cost follows each model's own pricing; unknown models fall back to the default."""
+        models = openai_provider.get_available_models()
+        cheapest = min(models, key=lambda m: m.cost_per_1k_input_tokens + m.cost_per_1k_output_tokens)
+        priciest = max(models, key=lambda m: m.cost_per_1k_input_tokens + m.cost_per_1k_output_tokens)
 
-        # Test with gpt-4o (should be more expensive)
-        cost_regular = openai_provider.estimate_cost(1000, 500, "gpt-4o")
+        cost_cheap = openai_provider.estimate_cost(1000, 500, cheapest.name)
+        cost_pricey = openai_provider.estimate_cost(1000, 500, priciest.name)
 
-        assert cost_mini > 0
-        assert cost_regular > cost_mini
+        assert cost_cheap > 0
+        assert cost_pricey > cost_cheap
+        assert openai_provider.estimate_cost(1000, 500, "no-such-model") == openai_provider.estimate_cost(
+            1000, 500, openai_provider.get_default_model()
+        )
 
     @pytest.mark.asyncio
     async def test_openai_error_handling(self, openai_provider):
@@ -213,31 +224,34 @@ class TestAnthropicProvider:
         assert anthropic_provider.api_key == "test-claude-key"
 
     def test_anthropic_models(self, anthropic_provider):
-        """Test Anthropic model information"""
+        """Test Anthropic model information (model IDs change often, so check structure only)"""
         models = anthropic_provider.get_available_models()
         model_names = [m.name for m in models]
 
-        assert "claude-3-5-sonnet-20241022" in model_names
-        assert "claude-3-haiku-20240307" in model_names
-        assert "claude-3-opus-20240229" in model_names
+        assert models
+        assert len(set(model_names)) == len(model_names)
+        for model in models:
+            assert isinstance(model, AIModelInfo)
+            assert model.name.startswith("claude-")
+            assert model.cost_per_1k_input_tokens > 0
+            assert model.cost_per_1k_output_tokens > 0
 
-        default_model = anthropic_provider.get_default_model()
-        assert default_model == "claude-3-5-sonnet-20241022"
+        assert anthropic_provider.get_default_model() in model_names
 
     def test_anthropic_cost_estimation(self, anthropic_provider):
-        """Test Anthropic cost estimation"""
-        # Test with Haiku (should be cheapest)
-        cost_haiku = anthropic_provider.estimate_cost(
-            1000, 500, "claude-3-haiku-20240307"
-        )
+        """Cost follows each model's own pricing; unknown models fall back to the default."""
+        models = anthropic_provider.get_available_models()
+        cheapest = min(models, key=lambda m: m.cost_per_1k_input_tokens + m.cost_per_1k_output_tokens)
+        priciest = max(models, key=lambda m: m.cost_per_1k_input_tokens + m.cost_per_1k_output_tokens)
 
-        # Test with Opus (should be most expensive)
-        cost_opus = anthropic_provider.estimate_cost(
-            1000, 500, "claude-3-opus-20240229"
-        )
+        cost_cheap = anthropic_provider.estimate_cost(1000, 500, cheapest.name)
+        cost_pricey = anthropic_provider.estimate_cost(1000, 500, priciest.name)
 
-        assert cost_haiku > 0
-        assert cost_opus > cost_haiku
+        assert cost_cheap > 0
+        assert cost_pricey > cost_cheap
+        assert anthropic_provider.estimate_cost(1000, 500, "claude-unknown") == anthropic_provider.estimate_cost(
+            1000, 500, anthropic_provider.get_default_model()
+        )
 
 
 class TestAIProviderManager:

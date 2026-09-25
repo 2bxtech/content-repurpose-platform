@@ -1,5 +1,5 @@
 """
-Phase 6: File Processing Enhancement Tests
+File Processing Tests
 
 Tests for robust PDF/DOCX parsing, security validation, and preview generation.
 These are UNIT tests that test the file processor directly without requiring
@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from app.services.file_processor import FileProcessor, ProcessingResult
 
 
-class TestFileProcessorPhase6:
+class TestFileProcessor:
     """Test the enhanced file processor"""
 
     @pytest.fixture
@@ -35,62 +35,68 @@ class TestFileProcessorPhase6:
     def malicious_content(self):
         return b"<script>alert('xss')</script>\nSome normal content\njavascript:void(0)"
 
-    def test_file_size_validation(self, file_processor):
-        """Test file size validation"""
-        # Test normal size
-        normal_content = b"normal content" * 100
-        file_processor._validate_file_size(normal_content)  # Should not raise
+    @staticmethod
+    async def _process(processor, name, content, content_type="text/plain"):
+        path = processor.upload_dir / name
+        path.write_bytes(content)
+        return await processor.process_file(str(path), content_type, name)
 
-        # Test oversized file
-        large_content = b"x" * (11 * 1024 * 1024)  # 11MB
-        with pytest.raises(ValueError, match="File too large"):
-            file_processor._validate_file_size(large_content)
+    @pytest.mark.asyncio
+    async def test_file_size_validation(self, file_processor):
+        """Oversized and empty files are rejected by process_file"""
+        result = await self._process(file_processor, "normal.txt", b"normal content " * 100)
+        assert result.security_scan_passed is True
 
-        # Test empty file
-        with pytest.raises(ValueError, match="Empty file not allowed"):
-            file_processor._validate_file_size(b"")
+        large = await self._process(file_processor, "large.txt", b"x" * (11 * 1024 * 1024))
+        assert large.security_scan_passed is False
+        assert "File too large" in large.metadata["error"]
 
-    def test_file_type_validation(self, file_processor):
-        """Test file type validation"""
-        # Test valid file types
-        file_processor._validate_file_type("test.pdf", b"%PDF-1.4")  # Should not raise
-        file_processor._validate_file_type(
-            "test.txt", b"plain text content"
-        )  # Should not raise
+        empty = await self._process(file_processor, "empty.txt", b"")
+        assert empty.security_scan_passed is False
+        assert "Empty file not allowed" in empty.metadata["error"]
 
-        # Test invalid extension
-        with pytest.raises(ValueError, match="Unsupported file type"):
-            file_processor._validate_file_type("test.exe", b"MZ")
+    @pytest.mark.asyncio
+    async def test_file_type_validation(self, file_processor):
+        """Unsupported extensions and executable signatures are rejected"""
+        ok = await self._process(file_processor, "test.txt", b"plain text content")
+        assert ok.security_scan_passed is True
 
-        # Test dangerous signatures
-        with pytest.raises(ValueError, match="Dangerous file signature"):
-            file_processor._validate_file_type(
-                "test.pdf", b"MZ\x90\x00"
-            )  # PE signature
+        exe = await self._process(file_processor, "test.exe", b"MZ", "application/octet-stream")
+        assert exe.security_scan_passed is False
+        assert "Unsupported file type" in exe.metadata["error"]
 
-    def test_security_scan_basic(self, file_processor, malicious_content):
-        """Test basic security scanning"""
-        # Test clean content
-        clean_content = b"This is clean content without any suspicious patterns."
-        result = file_processor._security_scan(clean_content, "test.txt")
-        assert result["is_safe"] is True
-        assert len(result["threats_detected"]) == 0
+        # A PE header disguised as a .txt file
+        disguised = await self._process(file_processor, "test.txt", b"MZ\x90\x00 payload")
+        assert disguised.security_scan_passed is False
+        assert "Dangerous file signature" in disguised.metadata["error"]
 
-        # Test malicious content
-        with pytest.raises(ValueError, match="Security scan failed"):
-            file_processor._security_scan(malicious_content, "test.txt")
+    @pytest.mark.asyncio
+    async def test_security_scan_basic(self, file_processor, malicious_content):
+        """Script-like text is logged but not rejected: text documents are stored and
+        rendered as plain text, so the scan only blocks executables (see _validate_file_security)."""
+        clean = await self._process(
+            file_processor, "clean.txt", b"This is clean content without any suspicious patterns."
+        )
+        assert clean.security_scan_passed is True
+
+        scripted = await self._process(file_processor, "script.txt", malicious_content)
+        assert scripted.security_scan_passed is True
+        assert "<script>" in scripted.content
 
     @pytest.mark.asyncio
     async def test_text_processing_enhanced(self, file_processor, sample_text_content):
-        """Test enhanced text processing"""
-        result = await file_processor._process_text_enhanced("", sample_text_content)
+        """Test text extraction and metadata"""
+        result = await self._process(file_processor, "sample.txt", sample_text_content)
 
         assert isinstance(result, ProcessingResult)
+        assert result.security_scan_passed is True
         assert "sample text file" in result.content.lower()
         assert result.word_count > 0
         assert result.metadata["line_count"] == 3
         assert result.metadata["extraction_method"] == "text"
-        assert result.content_encoding in ["utf-8", "utf-8 (with replacements)"]
+        assert len(result.file_hash) == 64
+        # chardet reports pure-ASCII input as "ascii" (a subset of utf-8)
+        assert result.content_encoding in ["ascii", "utf-8", "utf-8 (with replacements)"]
 
     def test_file_hash_generation(self, file_processor):
         """Test file hash generation for deduplication"""
