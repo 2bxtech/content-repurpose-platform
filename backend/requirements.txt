@@ -34,7 +34,6 @@ openai>=1.50.0,<2.0
 anthropic>=0.34.0,<1.0
 
 # HTTP client + HTML extraction (URL ingestion)
-httpx>=0.25.0,<1.0
 beautifulsoup4>=4.12.0,<5.0
 lxml>=5.0.0,<6.0
 
@@ -59,34 +58,5 @@ structlog==23.2.0
 click==8.1.7
 APScheduler==3.10.4
 
-# Testing dependencies - your versions
-pytest==9.0.3
 httpx==0.25.0
 anyio==3.7.1
-
-# Additional packages I included that you might want:
-# hiredis==2.2.3  # Better Redis performance
-# flower==2.0.1  # Celery monitoring UI
-# python-docx==1.1.0  # Already in your list
-# openpyxl==3.1.2  # Excel file support
-# azure-openai==1.0.0  # Azure OpenAI support
-# aiohttp==3.9.1  # Additional HTTP client
-# sentry-sdk[fastapi]==1.38.0  # Error tracking
-# aiocache==0.12.2  # Async caching
-# validators==0.22.0  # Data validation utilities
-# rich==13.7.0  # Rich terminal output
-# typer==0.9.0  # CLI framework
-# safety==2.3.5  # Security scanning
-# bandit==1.7.5  # Security linting
-
-# Development tools (optional)
-# black==23.11.0  # Code formatting
-# isort==5.12.0  # Import sorting
-# flake8==6.1.0  # Linting
-# mypy==1.7.1  # Type checking
-# pytest-asyncio==0.21.1  # Async testing
-# pytest-mock==3.12.0  # Mocking
-# pytest-cov==4.1.0  # Coverage
-
-# Production deployment
-# gunicorn==21.2.0  # WSGI server

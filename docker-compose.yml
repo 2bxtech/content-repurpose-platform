@@ -1,8 +1,40 @@
+# Local development stack.
+#   docker compose up -d            -> postgres, redis, api (runs migrations on start), worker, beat
+#   docker compose --profile tools up -d   -> also pgAdmin and Redis Commander
+#
+# Values are read from .env when present; defaults work without one.
+# With no AI key set, the API uses the built-in mock provider (development only).
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://${DATABASE_USER:-postgres}:${DATABASE_PASSWORD:-postgres_dev_password}@postgres:5432/${DATABASE_NAME:-content_repurpose}
+  REDIS_URL: redis://redis:6379/0
+  REDIS_HOST: redis
+  ENVIRONMENT: development
+  DEBUG: "true"
+  SECRET_KEY: ${SECRET_KEY:-local-dev-access-token-signing-key-not-for-prod}
+  REFRESH_SECRET_KEY: ${REFRESH_SECRET_KEY:-local-dev-refresh-token-signing-key-not-for-prod}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+  AI_PROVIDER: ${AI_PROVIDER:-anthropic}
+  CORS_ORIGINS: '["http://localhost:3000","http://localhost:8000"]'
+  # Integration tests register many users quickly; CI raises these limits.
+  RATE_LIMIT_AUTH_ATTEMPTS: ${RATE_LIMIT_AUTH_ATTEMPTS:-5/15m}
+  RATE_LIMIT_API_CALLS: ${RATE_LIMIT_API_CALLS:-100/1m}
+  RATE_LIMIT_TRANSFORMATIONS: ${RATE_LIMIT_TRANSFORMATIONS:-30/1h}
+
+x-app: &app
+  build: .
+  restart: unless-stopped
+  environment: *app-env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
 services:
-  # PostgreSQL Database with Multi-Tenant Support
   postgres:
     image: postgres:16-alpine
-    container_name: content-repurpose-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DATABASE_NAME:-content_repurpose}
@@ -10,162 +42,74 @@ services:
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-postgres_dev_password}
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     ports:
-      - "5433:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d content_repurpose"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
       timeout: 5s
-      retries: 5
-    networks:
-      - content-repurpose-network
+      retries: 10
 
-  # Redis for Session Management and Rate Limiting
   redis:
     image: redis:7-alpine
-    container_name: content-repurpose-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
       - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
     command: redis-server /usr/local/etc/redis/redis.conf
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-    networks:
-      - content-repurpose-network
+      retries: 10
 
-  # pgAdmin for Database Management (Optional)
+  api:
+    <<: *app
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  worker:
+    <<: *app
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
+    healthcheck:
+      disable: true
+
+  beat:
+    <<: *app
+    command: celery -A app.core.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    healthcheck:
+      disable: true
+
   pgadmin:
     image: dpage/pgadmin4:latest
-    container_name: content-repurpose-pgadmin
-    restart: unless-stopped
+    profiles: [tools]
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@localhost.dev}
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin_dev_password}
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_SERVER_MODE: "False"
     ports:
       - "5050:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-    depends_on:
-      - postgres
-    networks:
-      - content-repurpose-network
+    depends_on: [postgres]
 
-  # Redis Commander for Redis Management (Optional)
   redis-commander:
     image: rediscommander/redis-commander:latest
-    container_name: content-repurpose-redis-commander
-    restart: unless-stopped
+    profiles: [tools]
     environment:
       REDIS_HOSTS: local:redis:6379
     ports:
       - "8081:8081"
-    depends_on:
-      - redis
-    networks:
-      - content-repurpose-network
-
-  # Content Repurpose API
-  api:
-    build: .
-    container_name: content-repurpose-api
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres_dev_password@postgres:5432/content_repurpose
-      REDIS_URL: redis://redis:6379/0
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      ENVIRONMENT: development
-      DEBUG: "true"
-      SECRET_KEY: dev_secret_key_change_in_production_32_chars_minimum_for_security
-      REFRESH_SECRET_KEY: dev_refresh_secret_key_change_in_production_32_chars_minimum_for_security
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    networks:
-      - content-repurpose-network
-
-  # Celery Worker for Background Processing
-  celery-worker:
-    build: .
-    container_name: content-repurpose-celery-worker
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres_dev_password@postgres:5432/content_repurpose
-      REDIS_URL: redis://redis:6379/0
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      ENVIRONMENT: development
-      DEBUG: "true"
-      SECRET_KEY: dev_secret_key_change_in_production_32_chars_minimum_for_security
-      REFRESH_SECRET_KEY: dev_refresh_secret_key_change_in_production_32_chars_minimum_for_security
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    command: celery -A app.core.celery_app worker --loglevel=info
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - content-repurpose-network
-
-  # Celery Beat for Periodic Tasks
-  celery-beat:
-    build: .
-    container_name: content-repurpose-celery-beat
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres_dev_password@postgres:5432/content_repurpose
-      REDIS_URL: redis://redis:6379/0
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      ENVIRONMENT: development
-      DEBUG: "true"
-      SECRET_KEY: dev_secret_key_change_in_production_32_chars_minimum_for_security
-      REFRESH_SECRET_KEY: dev_refresh_secret_key_change_in_production_32_chars_minimum_for_security
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-    command: celery -A app.core.celery_app beat --loglevel=info
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - content-repurpose-network
+    depends_on: [redis]
 
 volumes:
   postgres_data:
-    driver: local
   redis_data:
-    driver: local
-  pgadmin_data:
-    driver: local
-
-networks:
-  content-repurpose-network:
-    driver: bridge

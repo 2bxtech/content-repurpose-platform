@@ -6,11 +6,17 @@ No complex Docker client dependencies - just HTTP requests.
 import os
 from types import SimpleNamespace
 import pytest
-import asyncio
 import httpx
 from typing import AsyncGenerator
 
 os.environ["ENVIRONMENT"] = "testing"
+# Unit tests import app.core.config, which requires signing keys; use throwaway values.
+os.environ.setdefault("SECRET_KEY", "test-only-access-signing-key-0123456789abcdef")
+os.environ.setdefault("REFRESH_SECRET_KEY", "test-only-refresh-signing-key-0123456789abcdef")
+if not os.getenv("TEST_API_URL"):
+    # Unit mode: in-process TestClient apps must never reach a developer's local Postgres
+    # (the default component config points at localhost:5433). Port 9 is unreachable.
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://unit:unit@127.0.0.1:9/unit_tests"
 os.environ["DEBUG"] = "true"
 os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
 
@@ -29,30 +35,26 @@ def mock_ai_provider():
     return provider
 
 # Test configuration
-TEST_API_URL = "http://localhost:8002"
+# Integration tests only run when TEST_API_URL is set explicitly (make test-integration),
+# so a plain `pytest` never writes to whatever happens to be listening on :8000.
+TEST_API_URL = os.getenv("TEST_API_URL")
 TEST_DB_URL = (
     "postgresql://postgres:test_password@localhost:5434/content_repurpose_test"
 )
 TEST_REDIS_URL = "redis://localhost:6380"
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest.fixture(scope="function", autouse=False)  # Changed to function scope
 async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     """
     Simple HTTP client for API testing.
-    Assumes test API is already running on port 8002.
+    Targets TEST_API_URL; skipped when it is unset.
     
     Note: Tests must explicitly request this fixture to use it.
     Schema validation tests don't request it, so they won't try to connect to API.
     """
+    if not TEST_API_URL:
+        pytest.skip("Integration test: set TEST_API_URL or run `make test-integration`")
     timeout = httpx.Timeout(30.0)
 
     async with httpx.AsyncClient(
@@ -63,10 +65,11 @@ async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
         # Verify API is accessible
         try:
             response = await client.get("/api/health")
-            if response.status_code != 200:
-                pytest.fail(f"API health check failed: {response.status_code}")
-        except Exception as e:
-            pytest.fail(f"Cannot connect to test API at {TEST_API_URL}: {e}")
+        except httpx.TransportError as e:
+            # TEST_API_URL was set on purpose, so an unreachable API is a failure, not a skip.
+            pytest.fail(f"Cannot reach test API at {TEST_API_URL}: {e}")
+        if response.status_code != 200:
+            pytest.fail(f"API health check failed: {response.status_code}")
 
         yield client
 

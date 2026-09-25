@@ -25,7 +25,7 @@ class TestFrameworkSetup:
             "backend/main.py",
             "backend/requirements.txt",
             "docker-compose.yml",
-            "docker-compose.test.yml",
+            "Makefile",
         ]
 
         for file_path in expected_files:
