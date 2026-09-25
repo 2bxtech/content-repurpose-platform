@@ -79,7 +79,7 @@ Schema changes go through Alembic only (`backend/alembic/versions/`). The API ne
 - **Auth.** Access token 15 min, refresh token 7 days. Refresh rotates and blacklists the old token, and sessions live in Redis and can be revoked individually or all at once.
 - **Operator endpoints.** Global provider config, cost data and socket stats require a user ID listed in `PLATFORM_ADMIN_USER_IDS`. Workspace roles don't grant this, and email addresses aren't used because registration doesn't verify ownership.
 - **Rate limits.** Stored in Redis, per client IP, in three classes: auth (`5/15m`), transformation writes (`30/1h`), everything else (`100/1m`). Only honour `X-Forwarded-For` when `TRUST_PROXY_HEADERS=true`.
-- **Uploads.** Size limit and an extension/content-type allowlist; files that fail validation or the content scan return 400. Magic-byte sniffing runs when libmagic is available and is advisory (logged).
+- **Uploads.** Size limit, an extension allowlist, executable-signature rejection, and content sniffing with libmagic (installed in the image): a file whose bytes don't match its extension, such as a script renamed to `.pdf`, is rejected with 400.
 - **URL ingestion.** The host is resolved and private, loopback and link-local addresses are rejected; redirects are not followed and timeouts are short. (A DNS answer could still change between check and fetch; pinning the resolved IP for the request would close that gap.)
 - **Response headers.** `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a deny-all CSP on JSON responses, and HSTS in production.
 - **Logs.** JWTs in WebSocket query strings are redacted from uvicorn logs, and 500 responses don't echo exception text outside debug mode.

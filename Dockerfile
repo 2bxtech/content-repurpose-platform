@@ -15,6 +15,12 @@ COPY backend/requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# libmagic backs python-magic's content sniffing for uploads; without it the
+# check silently turns off.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy application code
 COPY backend/ .
 
