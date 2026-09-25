@@ -1,6 +1,5 @@
 """Periodic maintenance run by Celery beat."""
 
-import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -9,10 +8,12 @@ from sqlalchemy import update
 from app.core.celery_app import celery_app
 from app.db.models.transformation import Transformation as TransformationDB
 from app.models.transformation import TransformationStatus
-from app.tasks.db import task_session
+from app.tasks.db import run_async, task_session
 
 logger = logging.getLogger(__name__)
 
+# Comfortably above the Celery hard time limit (celery_app.py), so a live task is
+# never failed underneath itself.
 STUCK_AFTER = timedelta(minutes=30)
 
 
@@ -20,7 +21,7 @@ STUCK_AFTER = timedelta(minutes=30)
 def fail_stuck_transformations() -> int:
     """Mark transformations that never finished (lost message, crashed worker,
     provider hang past every timeout) as FAILED so clients stop polling."""
-    return asyncio.run(_fail_stuck())
+    return run_async(_fail_stuck())
 
 
 async def _fail_stuck() -> int:

@@ -14,7 +14,6 @@ from pydantic import BaseModel
 import redis.asyncio as aioredis
 
 from app.core.config import settings
-from app.services.redis_service import redis_service
 
 logger = logging.getLogger(__name__)
 
@@ -66,22 +65,17 @@ class ConnectionManager:
 
         # Redis pub/sub fan-out (see start_redis_listener)
         self._redis: Optional[aioredis.Redis] = None
-        self.pubsub = None
+        self._subscribed = False
         self.redis_listener_task: Optional[asyncio.Task] = None
 
     async def start_redis_listener(self):
         """Subscribe to the fan-out channel so messages published by any process
-        (other API replicas, Celery workers) reach sockets connected to this one."""
+        (other API replicas, Celery workers) reach sockets connected to this one.
+        Runs in the background and keeps retrying, so Redis being down at startup
+        only delays fan-out instead of disabling it."""
         if self.redis_listener_task:
             return
         self._redis = aioredis.from_url(settings.get_redis_url(), decode_responses=True)
-        self.pubsub = self._redis.pubsub()
-        try:
-            await self.pubsub.subscribe(REDIS_CHANNEL)
-        except Exception as e:
-            logger.warning("WebSocket fan-out disabled, Redis unavailable: %s", e)
-            await self._close_redis()
-            return
         self.redis_listener_task = asyncio.create_task(self._redis_listener())
 
     async def stop_redis_listener(self):
@@ -92,20 +86,18 @@ class ConnectionManager:
             except asyncio.CancelledError:
                 pass
             self.redis_listener_task = None
-        await self._close_redis()
-
-    async def _close_redis(self):
-        if self.pubsub:
-            await self.pubsub.aclose()
-            self.pubsub = None
         if self._redis:
             await self._redis.aclose()
             self._redis = None
+        self._subscribed = False
 
     async def _redis_listener(self):
         while True:
+            pubsub = self._redis.pubsub()
             try:
-                async for message in self.pubsub.listen():
+                await pubsub.subscribe(REDIS_CHANNEL)
+                self._subscribed = True
+                async for message in pubsub.listen():
                     if message["type"] != "message":
                         continue
                     try:
@@ -117,8 +109,14 @@ class ConnectionManager:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning("Redis fan-out listener error, retrying: %s", e)
-                await asyncio.sleep(1)
+                logger.warning("Redis fan-out unavailable, retrying in 2s: %s", e)
+                await asyncio.sleep(2)
+            finally:
+                self._subscribed = False
+                try:
+                    await pubsub.aclose()
+                except Exception:
+                    pass
 
     async def _handle_redis_message(self, message: WebSocketMessage):
         """Deliver a fan-out message to the matching sockets on this process."""
@@ -270,25 +268,19 @@ class ConnectionManager:
     async def fan_out(self, message: WebSocketMessage):
         """Deliver a targeted message to every API process.
 
-        With the Redis listener running, publish and let each process (including
-        this one) deliver to its own sockets; otherwise deliver locally.
+        While subscribed, publish and let each process (this one included) deliver
+        to its own sockets; otherwise deliver locally so single-instance setups
+        keep working without Redis.
         """
-        if self.redis_listener_task and redis_service.is_connected():
-            await self.publish_to_redis(message)
-        else:
-            await self._handle_redis_message(message)
-
-    async def publish_to_redis(self, message: WebSocketMessage):
-        """Publish message to Redis for distributed broadcasting"""
-        if not redis_service.is_connected():
-            return
-
-        try:
-            redis_service.redis_client.publish(
-                REDIS_CHANNEL, json.dumps(message.model_dump(), default=str)
-            )
-        except Exception as e:
-            logger.warning("Error publishing to Redis: %s", e)
+        if self._subscribed:
+            try:
+                await self._redis.publish(
+                    REDIS_CHANNEL, json.dumps(message.model_dump(), default=str)
+                )
+                return
+            except Exception as e:
+                logger.warning("Redis publish failed, delivering locally: %s", e)
+        await self._handle_redis_message(message)
 
     def get_workspace_presence(self, workspace_id: str) -> List[UserPresence]:
         """Get list of users present in a workspace"""

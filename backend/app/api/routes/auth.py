@@ -8,7 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from datetime import datetime
 from typing import Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 import logging
 import uuid
 
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 def get_user(email: str):
     """Get user by email from in-memory database"""
+    email = email.strip().lower()
     if email in USERS_DB:
         user_dict = USERS_DB[email]
         return user_dict
@@ -55,7 +56,7 @@ def get_user_by_id(user_id: uuid.UUID):
 
 async def get_db_user(db: AsyncSession, email: str):
     """Get user by email from database"""
-    stmt = select(UserDB).where(UserDB.email == email)
+    stmt = select(UserDB).where(func.lower(UserDB.email) == email.strip().lower())
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -156,7 +157,7 @@ async def require_platform_admin(
     current_user: Annotated[dict, Depends(get_current_active_user)],
 ):
     """Gate operator endpoints whose effects span all tenants."""
-    if (current_user.get("email") or "").lower() not in settings.platform_admin_emails:
+    if str(current_user.get("id", "")).lower() not in settings.platform_admin_user_ids:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Platform admin access required"
         )

@@ -30,13 +30,15 @@ class Settings(BaseSettings):
     RATE_LIMIT_TRANSFORMATIONS: str = "30/1h"  # 30 transformations per hour
     TRUST_PROXY_HEADERS: bool = False
 
-    # Comma-separated emails allowed to use operator endpoints (global AI provider
-    # config, connection stats). Empty = nobody. Workspace roles don't grant this.
-    PLATFORM_ADMIN_EMAILS: str = ""
+    # Comma-separated user IDs allowed to use operator endpoints (global AI provider
+    # config, cost data, connection stats). Empty = nobody. IDs rather than emails:
+    # registration doesn't verify email ownership, so an email allowlist could be
+    # claimed by whoever registers the address first.
+    PLATFORM_ADMIN_USER_IDS: str = ""
 
     @property
-    def platform_admin_emails(self) -> Set[str]:
-        return {e.strip().lower() for e in self.PLATFORM_ADMIN_EMAILS.split(",") if e.strip()}
+    def platform_admin_user_ids(self) -> Set[str]:
+        return {u.strip().lower() for u in self.PLATFORM_ADMIN_USER_IDS.split(",") if u.strip()}
 
     # Redis settings for session management and rate limiting
     # REDIS_URL takes priority (Railway provides this as a single URL)
