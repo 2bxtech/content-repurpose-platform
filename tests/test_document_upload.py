@@ -61,10 +61,6 @@ def test_upload_mismatched_mime_type(unit_client):
     assert response.status_code == 400
 
 
-@pytest.mark.xfail(
-    reason="bug: upload route's `except Exception` turns its own 400 HTTPException into a 500",
-    strict=True,
-)
 def test_upload_security_scan_failure(unit_client, tmp_path):
     """An executable disguised as a .txt is rejected and its temp file removed"""
     response = _upload(unit_client, "malicious.txt", b"MZ\x90\x00 not really text")
@@ -74,10 +70,6 @@ def test_upload_security_scan_failure(unit_client, tmp_path):
     assert list(tmp_path.glob("*malicious.txt")) == []
 
 
-@pytest.mark.xfail(
-    reason="bug: upload route's `except Exception` turns its own 400 HTTPException into a 500",
-    strict=True,
-)
 def test_upload_security_scan_failure_from_processor(unit_client):
     """The route trusts the processor's verdict"""
     rejected = SimpleNamespace(security_scan_passed=False)
