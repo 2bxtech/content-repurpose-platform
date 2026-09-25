@@ -1,4 +1,4 @@
-from fastapi import HTTPException, status, Request
+from fastapi import Request
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 import jwt
@@ -223,40 +223,6 @@ class AuthService:
         return request.client.host if request.client else "unknown"
 
     # Rate limiting
-    def check_rate_limit(
-        self, request: Request, limit_type: str
-    ) -> tuple[bool, int, int]:
-        """Check rate limit for a specific request type"""
-        ip_address = self._get_client_ip(request)
-
-        # Get the appropriate limit
-        limits = {
-            "auth": settings.RATE_LIMIT_AUTH_ATTEMPTS,
-            "api": settings.RATE_LIMIT_API_CALLS,
-            "transformations": settings.RATE_LIMIT_TRANSFORMATIONS,
-        }
-
-        limit = limits.get(limit_type, "100/1m")
-        key = f"rate_limit:{limit_type}:{ip_address}"
-
-        return redis_service.check_rate_limit(key, limit)
-
-    def check_auth_rate_limit(self, request: Request) -> bool:
-        """Check authentication rate limit and raise exception if exceeded"""
-        allowed, remaining, reset_time = self.check_rate_limit(request, "auth")
-
-        if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail={
-                    "message": "Too many authentication attempts",
-                    "retry_after": reset_time,
-                },
-                headers={"Retry-After": str(reset_time)},
-            )
-
-        return True
-
     # Session management
     def create_session(
         self, user_id, refresh_token: str, device_info: DeviceInfo

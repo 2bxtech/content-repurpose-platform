@@ -15,7 +15,8 @@ from app.models.auth import PasswordChangeRequest
 from app.api.routes.websockets import websocket_endpoint
 from app.core.config import settings
 from app.core.websocket_auth import authenticate_websocket_token
-from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.rate_limit import _client_ip
+from app.services.rate_limiter import RateLimiter, parse_limit
 from app.services.auth_service import AuthService
 from app.services.ai_providers.base import AIProviderError
 from app.services.ai_providers.manager import AIProviderManager
@@ -107,36 +108,61 @@ async def test_websocket_rejects_cross_workspace_connection():
 
 
 def test_untrusted_forwarded_header_cannot_evade_ip_rate_limit(monkeypatch):
-    middleware = RateLimitMiddleware(Mock())
     request = make_request({"x-forwarded-for": "198.51.100.99"})
     monkeypatch.setattr(settings, "TRUST_PROXY_HEADERS", False)
 
-    assert middleware._get_client_ip(request) == "203.0.113.10"
+    assert _client_ip(request) == "203.0.113.10"
 
 
 def test_trusted_proxy_header_uses_first_forwarded_address(monkeypatch):
-    middleware = RateLimitMiddleware(Mock())
     request = make_request(
         {"x-forwarded-for": "198.51.100.99, 192.0.2.1"}
     )
     monkeypatch.setattr(settings, "TRUST_PROXY_HEADERS", True)
 
-    assert middleware._get_client_ip(request) == "198.51.100.99"
+    assert _client_ip(request) == "198.51.100.99"
 
 
-def test_rate_limit_uses_atomic_redis_script():
-    service = RedisService.__new__(RedisService)
-    service.redis_client = Mock()
-    service.redis_client.ping.return_value = True
-    service.redis_client.eval.return_value = [1, 3, 60_000]
+class _FakeAsyncRedis:
+    """Records the registered script and returns a canned result when it runs."""
 
-    result = service.check_rate_limit("rate:test", "5/1m")
+    def __init__(self, result=None, error=None):
+        self.result, self.error, self.script, self.calls = result, error, None, []
 
-    assert result == (True, 3, 60)
-    service.redis_client.eval.assert_called_once()
-    script = service.redis_client.eval.call_args.args[0]
-    assert "ZREMRANGEBYSCORE" in script
-    assert "ZADD" in script
+    def register_script(self, script):
+        self.script = script
+
+        async def run(keys, args):
+            self.calls.append((keys, args))
+            if self.error:
+                raise self.error
+            return self.result
+
+        return run
+
+
+async def test_rate_limit_uses_one_atomic_redis_script():
+    redis = _FakeAsyncRedis(result=[1, 3, 60_000])
+
+    result = await RateLimiter(redis).check("rate_limit:api:1.2.3.4", "5/1m")
+
+    assert (result.allowed, result.remaining, result.retry_after_seconds) == (True, 3, 60)
+    assert len(redis.calls) == 1 and redis.calls[0][0] == ["rate_limit:api:1.2.3.4"]
+    assert "ZREMRANGEBYSCORE" in redis.script and "ZADD" in redis.script
+
+
+async def test_auth_limits_fail_closed_in_production_when_redis_is_down(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    limiter = RateLimiter(_FakeAsyncRedis(error=ConnectionError("redis down")))
+
+    assert (await limiter.check("rate_limit:auth:1.2.3.4", "5/15m")).allowed is False
+    assert (await limiter.check("rate_limit:api:1.2.3.4", "100/1m")).allowed is True
+
+
+def test_parse_limit():
+    assert parse_limit("5/15m") == (5, 900)
+    assert parse_limit("30/1h") == (30, 3600)
+    assert parse_limit("10/30s") == (10, 30)
 
 
 def test_session_existence_distinguishes_outage_from_revocation():

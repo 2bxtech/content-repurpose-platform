@@ -4,7 +4,6 @@ from typing import Any, Optional, Dict, List
 from datetime import datetime
 from app.core.config import settings
 import logging
-import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -242,75 +241,6 @@ class RedisService:
         return False
 
     # Rate limiting
-    def check_rate_limit(self, key: str, limit: str) -> tuple[bool, int, int]:
-        """
-        Check rate limit for a key
-        Returns: (is_allowed, remaining_requests, reset_time_seconds)
-        """
-        if not self.is_connected():
-            # Credential endpoints fail closed in production; ordinary API
-            # traffic remains available during a Redis outage.
-            if settings.ENVIRONMENT == "production" and key.startswith(
-                "rate_limit:auth:"
-            ):
-                return False, 0, 5
-            return True, 999, 0
-
-        try:
-            # Parse limit string like "5/15m" or "100/1h"
-            count, period = limit.split("/")
-            count = int(count)
-
-            # Convert period to seconds
-            if period.endswith("m"):
-                period_seconds = int(period[:-1]) * 60
-            elif period.endswith("h"):
-                period_seconds = int(period[:-1]) * 3600
-            elif period.endswith("s"):
-                period_seconds = int(period[:-1])
-            else:
-                period_seconds = int(period)
-
-            # Keep prune/count/add atomic so concurrent workers cannot all pass
-            # the same limit. A random member also prevents same-timestamp calls
-            # from overwriting one another in the sorted set.
-            now_ms = int(datetime.utcnow().timestamp() * 1000)
-            period_ms = period_seconds * 1000
-            script = """
-            local key, now, window, limit, member =
-                KEYS[1], tonumber(ARGV[1]), tonumber(ARGV[2]),
-                tonumber(ARGV[3]), ARGV[4]
-            redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
-            local current = redis.call('ZCARD', key)
-            if current < limit then
-                redis.call('ZADD', key, now, member)
-                redis.call('PEXPIRE', key, window)
-                return {1, limit - current - 1, window}
-            end
-            local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-            local retry = window
-            if oldest[2] then retry = math.max(0, oldest[2] + window - now) end
-            return {0, 0, retry}
-            """
-            allowed, remaining, reset_ms = self.redis_client.eval(
-                script,
-                1,
-                key,
-                now_ms,
-                period_ms,
-                count,
-                f"{now_ms}:{uuid.uuid4()}",
-            )
-            return bool(allowed), int(remaining), max(0, (int(reset_ms) + 999) // 1000)
-
-        except Exception as e:
-            logger.error(f"Error checking rate limit: {str(e)}")
-            if settings.ENVIRONMENT == "production" and key.startswith(
-                "rate_limit:auth:"
-            ):
-                return False, 0, 5
-            return True, 999, 0
-
     # Generic caching
     def set(self, key: str, value: Any, expire: int = None) -> bool:
         """Set a value in Redis with optional expiry"""
