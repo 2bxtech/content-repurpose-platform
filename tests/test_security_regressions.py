@@ -276,3 +276,9 @@ def test_provider_clients_have_bounded_retries_and_timeouts(
 
     assert client.call_args.kwargs["timeout"] == settings.AI_REQUEST_TIMEOUT_SECONDS
     assert client.call_args.kwargs["max_retries"] == settings.AI_MAX_RETRIES
+
+
+@pytest.mark.parametrize("bad", ["100", "5/15d", "5/m", "0/1m", "5/0s"])
+def test_malformed_rate_limits_fail_at_startup(bad):
+    with pytest.raises(ValueError):
+        settings.validate_rate_limit(bad)

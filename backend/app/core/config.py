@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import Annotated, List, Set, Optional
 from urllib.parse import quote
@@ -258,6 +259,15 @@ class Settings(BaseSettings):
         if len(v) < 32:
             raise ValueError("Secret keys must be at least 32 characters long")
         return v
+
+    @field_validator("RATE_LIMIT_AUTH_ATTEMPTS", "RATE_LIMIT_API_CALLS", "RATE_LIMIT_TRANSFORMATIONS")
+    @classmethod
+    def validate_rate_limit(cls, v: str) -> str:
+        # Fail at startup rather than turning every request into a 500.
+        match = re.fullmatch(r"(\d+)/(\d+)([smh]?)", v.strip())
+        if not match or int(match.group(1)) < 1 or int(match.group(2)) < 1:
+            raise ValueError(f"Rate limit must look like '100/1m' (count/period[s|m|h]), got {v!r}")
+        return v.strip()
 
     @field_validator("PASSWORD_MIN_LENGTH")
     @classmethod
