@@ -90,9 +90,10 @@ async def test_transformation_runs_on_worker_and_notifies_over_websocket(api_cli
         )
         assert r.status_code == 201, r.text
         created = r.json()
-        # Returned immediately; the AI call happens on the Celery worker.
-        assert created["status"] in ("PENDING", "PROCESSING")
+        # Returned without waiting for the AI call, which runs on the Celery worker
+        # (task_id). A fast worker may already be done when the response is built.
         assert created["task_id"]
+        assert created["status"] in ("PENDING", "PROCESSING", "COMPLETED")
 
         events = []
         async def collect():

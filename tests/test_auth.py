@@ -3,44 +3,12 @@ Unit tests for authentication system
 Tests JWT tokens, password validation, user registration, etc.
 """
 
-import pytest
+import uuid
+
 import httpx
+import pytest
 
-
-# Mock auth service for unit tests when app modules aren't available
-class MockAuthService:
-    def validate_password_strength(self, password: str):
-        if len(password) < 12:
-            raise ValueError("Password does not meet security requirements")
-        if not any(c.isupper() for c in password):
-            raise ValueError("Password does not meet security requirements")
-        if not any(c.islower() for c in password):
-            raise ValueError("Password does not meet security requirements")
-        if not any(c.isdigit() for c in password):
-            raise ValueError("Password does not meet security requirements")
-        if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
-            raise ValueError("Password does not meet security requirements")
-
-    def create_access_token(self, user_data: dict) -> str:
-        return "mock-jwt-token"
-
-    def verify_access_token(self, token: str) -> dict:
-        if token == "mock-jwt-token":
-            return {"user_id": "test-user-id", "email": "test@example.com"}
-        raise ValueError("Invalid token")
-
-    def hash_password(self, password: str) -> str:
-        return f"$2b$12$mock_hash_for_{password}"
-
-    def verify_password(self, password: str, hashed: str) -> bool:
-        return hashed == f"$2b$12$mock_hash_for_{password}"
-
-
-try:
-    from app.services.auth_service import AuthService
-except ImportError:
-    # Use mock when app modules aren't available
-    AuthService = MockAuthService
+from app.services.auth_service import AuthService
 
 
 class TestAuthenticationUnit:
@@ -129,128 +97,122 @@ class TestAuthenticationIntegration:
     @pytest.mark.integration
     @pytest.mark.auth
     async def test_user_registration_flow(self, api_client: httpx.AsyncClient):
-        """Test complete user registration flow"""
+        """Registration returns the public profile; a second sign-up with the same email is refused"""
+        suffix = uuid.uuid4().hex[:8]
         user_data = {
-            "email": "integration@example.com",
-            "username": "integrationuser",
+            "email": f"integration_{suffix}@example.com",
+            "username": f"integration_{suffix}",
             "password": "IntegrationTest123!",
-            "first_name": "Integration",
-            "last_name": "Test",
         }
 
         response = await api_client.post("/api/auth/register", json=user_data)
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["email"] == user_data["email"]
+        assert data["username"] == user_data["username"]
+        assert "id" in data
+        assert "password" not in data
+        assert "hashed_password" not in data
 
-        if response.status_code == 201:
-            # New user created
-            data = response.json()
-            assert data["email"] == user_data["email"]
-            assert data["username"] == user_data["username"]
-            assert "id" in data
-            assert "password" not in data  # Password should not be returned
-        elif response.status_code == 409:
-            # User already exists (from previous test runs)
-            assert "already registered" in response.text.lower()
-        else:
-            pytest.fail(
-                f"Unexpected status code: {response.status_code}, {response.text}"
-            )
+        duplicate = await api_client.post(
+            "/api/auth/register", json={**user_data, "username": f"other_{suffix}"}
+        )
+        assert duplicate.status_code == 400
+        assert "already registered" in duplicate.text.lower()
 
     @pytest.mark.integration
     @pytest.mark.auth
-    async def test_login_flow(self, api_client: httpx.AsyncClient):
+    async def test_login_flow(self, api_client: httpx.AsyncClient, user_factory, jwt_claims):
         """Test user login and token generation"""
-        # First ensure user exists
-        user_data = {
-            "email": "integration@example.com",
-            "username": "integrationuser",
-            "password": "IntegrationTest123!",
-            "first_name": "Integration",
-            "last_name": "Test",
-        }
-        await api_client.post("/api/auth/register", json=user_data)
+        user = await user_factory()
 
-        # Test login
-        login_data = {"username": user_data["email"], "password": user_data["password"]}
-
-        response = await api_client.post("/api/auth/token", data=login_data)
+        response = await api_client.post(
+            "/api/auth/token", data={"username": user["email"], "password": user["password"]}
+        )
         assert response.status_code == 200
 
         tokens = response.json()
         assert "access_token" in tokens
         assert "refresh_token" in tokens
-        assert "token_type" in tokens
         assert "expires_in" in tokens
         assert tokens["token_type"] == "bearer"
+
+        claims = jwt_claims(tokens["access_token"])
+        assert claims["email"] == user["email"]
+        assert claims["workspace_id"]
+
+    @pytest.mark.integration
+    @pytest.mark.auth
+    async def test_login_rejects_wrong_password(self, api_client: httpx.AsyncClient, user_factory):
+        user = await user_factory()
+        response = await api_client.post(
+            "/api/auth/token", data={"username": user["email"], "password": "WrongPassword123!"}
+        )
+        assert response.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.auth
     async def test_protected_endpoint_access(
-        self, authenticated_client: httpx.AsyncClient
+        self, authenticated_client: httpx.AsyncClient, auth_user: dict
     ):
         """Test accessing protected endpoints with valid token"""
         response = await authenticated_client.get("/api/auth/me")
         assert response.status_code == 200
 
         profile = response.json()
-        assert "email" in profile
-        assert "username" in profile
-        assert "id" in profile
+        assert profile["email"] == auth_user["email"]
+        assert profile["username"] == auth_user["username"]
+        assert profile["id"] == auth_user["user_id"]
 
     @pytest.mark.integration
     @pytest.mark.auth
     async def test_invalid_token_access(self, api_client: httpx.AsyncClient):
         """Test accessing protected endpoints with invalid token"""
-        # Test with invalid token
         headers = {"Authorization": "Bearer invalid-token"}
         response = await api_client.get("/api/auth/me", headers=headers)
         assert response.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.auth
-    async def test_token_refresh_flow(self, api_client: httpx.AsyncClient):
-        """Test JWT token refresh functionality"""
-        # Login to get tokens
-        user_data = {
-            "email": "integration@example.com",
-            "username": "integrationuser",
-            "password": "IntegrationTest123!",
-            "first_name": "Integration",
-            "last_name": "Test",
-        }
-        await api_client.post("/api/auth/register", json=user_data)
+    async def test_token_refresh_flow(self, api_client: httpx.AsyncClient, user_factory):
+        """Refresh issues new tokens and rotates the refresh token (the old one stops working)"""
+        user = await user_factory()
 
-        login_data = {"username": user_data["email"], "password": user_data["password"]}
-
-        login_response = await api_client.post("/api/auth/token", data=login_data)
-        assert login_response.status_code == 200
-
-        tokens = login_response.json()
-        refresh_token = tokens["refresh_token"]
-
-        # Use refresh token to get new access token
-        refresh_data = {"refresh_token": refresh_token}
-        refresh_response = await api_client.post("/api/auth/refresh", json=refresh_data)
+        refresh_response = await api_client.post(
+            "/api/auth/refresh", json={"refresh_token": user["refresh_token"]}
+        )
         assert refresh_response.status_code == 200
 
         new_tokens = refresh_response.json()
-        assert "access_token" in new_tokens
-        assert (
-            new_tokens["access_token"] != tokens["access_token"]
-        )  # Should be different
+        assert new_tokens["access_token"] != user["token"]
+        assert new_tokens["refresh_token"] != user["refresh_token"]
+
+        replay = await api_client.post(
+            "/api/auth/refresh", json={"refresh_token": user["refresh_token"]}
+        )
+        assert replay.status_code == 401
 
     @pytest.mark.integration
     @pytest.mark.auth
-    async def test_logout_flow(self, authenticated_client: httpx.AsyncClient):
-        """Test user logout and token blacklisting"""
-        # Get current tokens (from authenticated_client setup)
-        me_response = await authenticated_client.get("/api/auth/me")
-        assert me_response.status_code == 200
+    async def test_logout_flow(self, api_client: httpx.AsyncClient, user_factory):
+        """Logout revokes the refresh token's session"""
+        user = await user_factory()
 
-        # Test logout (this would need the refresh token)
-        # For now, just test that the endpoint exists
-        logout_response = await authenticated_client.post("/api/auth/logout", json={})
-        # Might return 400 if refresh_token is missing, but endpoint should exist
-        assert logout_response.status_code in [200, 400]
+        # Logout needs to know which session to end
+        missing = await api_client.post("/api/auth/logout", json={}, headers=user["headers"])
+        assert missing.status_code == 400
+
+        logout_response = await api_client.post(
+            "/api/auth/logout",
+            json={"refresh_token": user["refresh_token"]},
+            headers=user["headers"],
+        )
+        assert logout_response.status_code == 200
+
+        refresh_after_logout = await api_client.post(
+            "/api/auth/refresh", json={"refresh_token": user["refresh_token"]}
+        )
+        assert refresh_after_logout.status_code == 401
 
 
 class TestAuthenticationSecurity:
@@ -288,21 +250,23 @@ class TestAuthenticationSecurity:
         ]
 
         for weak_password in weak_passwords:
+            suffix = uuid.uuid4().hex[:8]
             user_data = {
-                "email": f"weakpass{weak_password}@example.com",
-                "username": f"weakpass{weak_password}",
+                "email": f"weakpass_{suffix}@example.com",
+                "username": f"weakpass_{suffix}",
                 "password": weak_password,
-                "first_name": "Weak",
-                "last_name": "Password",
             }
 
             response = await api_client.post("/api/auth/register", json=user_data)
-            assert response.status_code == 400
+            # The request model enforces the policy, so FastAPI answers 422
+            assert response.status_code == 422, weak_password
             assert "password" in response.text.lower()
 
     @pytest.mark.integration
     @pytest.mark.auth
-    async def test_session_management(self, authenticated_client: httpx.AsyncClient):
+    async def test_session_management(
+        self, authenticated_client: httpx.AsyncClient, auth_user: dict
+    ):
         """Test session management endpoints"""
         # Get active sessions
         response = await authenticated_client.get("/api/auth/sessions")
@@ -312,9 +276,9 @@ class TestAuthenticationSecurity:
         assert isinstance(sessions, list)
         assert len(sessions) >= 1  # Should have at least the current session
 
-        # Verify session data structure
-        if sessions:
-            session = sessions[0]
-            assert "id" in session
-            assert "created_at" in session
-            assert "last_activity" in session
+        session = sessions[0]
+        assert session["user_id"] == auth_user["user_id"]
+        assert session["refresh_token_jti"]
+        assert "created_at" in session
+        assert "last_activity" in session
+        assert "device_info" in session

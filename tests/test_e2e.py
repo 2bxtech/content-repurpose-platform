@@ -1,546 +1,209 @@
 """
-End-to-end tests for complete user workflows
-Tests realistic user scenarios from start to finish
+End-to-end user workflows against the running stack (API + worker + Postgres + Redis).
+
+Also covers the upload -> transform flows formerly in test_integration_comprehensive.py.
 """
 
-import pytest
-import httpx
 import asyncio
+import time
+import uuid
+
+import httpx
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+LONG_TEXT = """
+Artificial Intelligence is revolutionizing content creation across industries.
+From automated writing assistants to sophisticated content optimization tools,
+AI is changing how we approach content strategy and production.
+
+Key benefits include faster content generation, improved consistency,
+data-driven optimization and personalization at scale. Challenges remain:
+maintaining an authentic voice, quality control, and balancing automation
+with human creativity.
+"""
+
+
+async def _create_text_document(client, headers, title, content=LONG_TEXT) -> dict:
+    r = await client.post("/api/documents/text", data={"title": title, "content": content}, headers=headers)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+async def _transform(client, headers, document_id, transformation_type="SUMMARY", parameters=None) -> dict:
+    r = await client.post(
+        "/api/transformations",
+        json={
+            "document_id": document_id,
+            "transformation_type": transformation_type,
+            "parameters": parameters or {},
+        },
+        headers=headers,
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
 
 
 class TestCompleteUserWorkflow:
-    """Test complete user workflows from registration to content transformation"""
+    """Registration through to transformed content"""
 
-    @pytest.mark.e2e
-    async def test_new_user_complete_workflow(self, api_client: httpx.AsyncClient):
-        """Test complete workflow for a new user"""
-        # Step 1: User Registration
-        user_data = {
-            "email": "newuser@example.com",
-            "username": "newuser",
-            "password": "NewUserPassword123!",
-            "first_name": "New",
-            "last_name": "User",
-        }
+    async def test_new_user_complete_workflow(
+        self, api_client: httpx.AsyncClient, wait_for_transformation, jwt_claims
+    ):
+        suffix = uuid.uuid4().hex[:8]
+        user = {"email": f"e2e_{suffix}@example.com", "username": f"e2e_{suffix}", "password": "NewUserPassword123!"}
 
-        register_response = await api_client.post("/api/auth/register", json=user_data)
-        if register_response.status_code == 409:
-            # User already exists, skip registration
-            pass
-        else:
-            assert register_response.status_code == 201
-
-        # Step 2: User Login
-        login_data = {"username": user_data["email"], "password": user_data["password"]}
-
-        login_response = await api_client.post("/api/auth/token", data=login_data)
-        assert login_response.status_code == 200
-
-        tokens = login_response.json()
-        access_token = tokens["access_token"]
-
-        # Set auth header for subsequent requests
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        # Step 3: Create Workspace
-        workspace_data = {
-            "name": "E2E Test Workspace",
-            "description": "End-to-end testing workspace",
-            "plan": "free",
-        }
-
-        workspace_response = await api_client.post(
-            "/api/workspaces", json=workspace_data, headers=headers
-        )
-        if workspace_response.status_code == 409:
-            # Workspace exists, get existing ones
-            workspaces_response = await api_client.get(
-                "/api/workspaces", headers=headers
-            )
-            workspaces = workspaces_response.json()
-            workspace = workspaces["workspaces"][0]
-        else:
-            assert workspace_response.status_code == 201
-            workspace = workspace_response.json()
-
-        workspace["id"]
-
-        # Step 4: Upload Document
-        document_data = {
-            "title": "E2E Test Document",
-            "content": """
-            This is a comprehensive test document for end-to-end testing.
-            
-            It contains multiple paragraphs with different types of content.
-            This includes technical information, business context, and creative elements.
-            
-            The document is designed to test various transformation capabilities
-            including summarization, blog post generation, and other content types.
-            
-            Key topics covered:
-            - Technical implementation details
-            - Business value propositions
-            - User experience considerations
-            - Performance metrics and analysis
-            """,
-            "source_type": "text",
-            "metadata": {"test_type": "e2e", "workflow": "complete_user_journey"},
-        }
-
-        document_response = await api_client.post(
-            "/api/documents", json=document_data, headers=headers
-        )
-        assert document_response.status_code == 201
-
-        document = document_response.json()
-        document_id = document["id"]
-
-        # Step 5: Create Multiple Transformations
-        transformations = []
-        transformation_types = [
-            {
-                "transformation_type": "summary",
-                "parameters": {"length": "brief", "tone": "professional"},
-            },
-            {
-                "transformation_type": "blog_post",
-                "parameters": {"tone": "engaging", "target_audience": "technical"},
-            },
-        ]
-
-        for transform_data in transformation_types:
-            transform_payload = {**transform_data, "document_id": document_id}
-
-            transform_response = await api_client.post(
-                "/api/transformations", json=transform_payload, headers=headers
-            )
-            assert transform_response.status_code in [201, 202]
-
-            transformation = transform_response.json()
-            transformations.append(transformation)
-
-        # Step 6: Monitor Transformation Progress
-        for transformation in transformations:
-            transformation_id = transformation["id"]
-
-            # Wait for completion (with timeout)
-            for _ in range(10):  # 10 second timeout
-                status_response = await api_client.get(
-                    f"/api/transformations/{transformation_id}/status", headers=headers
-                )
-                assert status_response.status_code == 200
-
-                status_data = status_response.json()
-                db_status = status_data["database_status"]
-
-                if db_status in ["completed", "failed"]:
-                    break
-
-                await asyncio.sleep(1)
-
-            # Verify final status
-            final_response = await api_client.get(
-                f"/api/transformations/{transformation_id}", headers=headers
-            )
-            assert final_response.status_code == 200
-
-            final_transformation = final_response.json()
-            assert final_transformation["status"] in ["completed", "failed"]
-
-        # Step 7: Review User's Content
-        # List all user's documents
-        docs_response = await api_client.get("/api/documents", headers=headers)
-        assert docs_response.status_code == 200
-
-        docs_data = docs_response.json()
-        assert len(docs_data["documents"]) >= 1
-
-        # List all user's transformations
-        transforms_response = await api_client.get(
-            "/api/transformations", headers=headers
-        )
-        assert transforms_response.status_code == 200
-
-        transforms_data = transforms_response.json()
-        assert len(transforms_data["transformations"]) >= len(transformations)
-
-        # Step 8: User Logout
-        logout_response = await api_client.post(
-            "/api/auth/logout", json={}, headers=headers
-        )
-        # Logout might require refresh token, so accept various responses
-        assert logout_response.status_code in [200, 400]
-
-    @pytest.mark.e2e
-    async def test_content_collaboration_workflow(self, api_client: httpx.AsyncClient):
-        """Test workflow involving multiple content operations"""
-        # Login as test user
-        login_data = {"username": "test@example.com", "password": "TestPassword123!"}
-
-        login_response = await api_client.post("/api/auth/token", data=login_data)
-        assert login_response.status_code == 200
-
-        tokens = login_response.json()
+        # 1. Register and log in
+        assert (await api_client.post("/api/auth/register", json=user)).status_code == 201
+        login = await api_client.post("/api/auth/token", data={"username": user["email"], "password": user["password"]})
+        assert login.status_code == 200
+        tokens = login.json()
         headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
-        # Create multiple related documents
-        documents = []
-        for i in range(3):
-            doc_data = {
-                "title": f"Collaboration Document {i + 1}",
-                "content": f"""
-                This is document {i + 1} in a series of related content pieces.
-                Each document builds upon the previous ones to create a comprehensive
-                content strategy for testing collaboration workflows.
-                
-                Document {i + 1} focuses on specific aspects of the overall topic
-                and demonstrates how multiple pieces of content can work together.
-                """,
-                "source_type": "text",
-                "metadata": {
-                    "series": "collaboration_test",
-                    "part": i + 1,
-                    "total_parts": 3,
-                },
-            }
+        # 2. A default workspace is provisioned at sign-up and carried in the token
+        workspaces = (await api_client.get("/api/workspaces", headers=headers)).json()["workspaces"]
+        assert [w["id"] for w in workspaces] == [jwt_claims(tokens["access_token"])["workspace_id"]]
 
-            doc_response = await api_client.post(
-                "/api/documents", json=doc_data, headers=headers
-            )
-            assert doc_response.status_code == 201
+        # 3. Add content and transform it into two formats
+        document = await _create_text_document(api_client, headers, "E2E Test Document")
+        created = [
+            await _transform(api_client, headers, document["id"], "SUMMARY", {"length": "brief"}),
+            await _transform(api_client, headers, document["id"], "BLOG_POST", {"tone": "engaging"}),
+        ]
 
-            documents.append(doc_response.json())
+        # 4. Worker finishes both
+        for transformation in created:
+            final = await wait_for_transformation(api_client, transformation["id"], headers=headers)
+            assert final["status"] == "COMPLETED"
+            assert final["result"]
 
-        # Create transformations for each document
-        all_transformations = []
-        for doc in documents:
-            transform_data = {
-                "document_id": doc["id"],
-                "transformation_type": "summary",
-                "parameters": {"length": "medium", "tone": "professional"},
-                "metadata": {
-                    "batch": "collaboration_test",
-                    "source_document": doc["title"],
-                },
-            }
+        # 5. Library shows everything
+        docs = (await api_client.get("/api/documents", headers=headers)).json()
+        assert [d["id"] for d in docs["documents"]] == [document["id"]]
+        transforms = (await api_client.get("/api/transformations", headers=headers)).json()
+        assert {t["id"] for t in transforms["transformations"]} == {t["id"] for t in created}
 
-            transform_response = await api_client.post(
-                "/api/transformations", json=transform_data, headers=headers
-            )
-            assert transform_response.status_code in [201, 202]
-
-            all_transformations.append(transform_response.json())
-
-        # Wait for all transformations to complete
-        completed_transformations = []
-        for transformation in all_transformations:
-            transformation_id = transformation["id"]
-
-            # Poll for completion
-            for _ in range(10):
-                status_response = await api_client.get(
-                    f"/api/transformations/{transformation_id}/status", headers=headers
-                )
-
-                if status_response.status_code == 200:
-                    status_data = status_response.json()
-                    if status_data["database_status"] in ["completed", "failed"]:
-                        completed_transformations.append(transformation_id)
-                        break
-
-                await asyncio.sleep(1)
-
-        # Verify all transformations were processed
-        assert len(completed_transformations) == len(all_transformations)
-
-    @pytest.mark.e2e
-    async def test_error_recovery_workflow(self, api_client: httpx.AsyncClient):
-        """Test workflow with error conditions and recovery"""
-        # Login
-        login_data = {"username": "test@example.com", "password": "TestPassword123!"}
-
-        login_response = await api_client.post("/api/auth/token", data=login_data)
-        assert login_response.status_code == 200
-
-        headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
-
-        # Try to create transformation with invalid document ID
-        invalid_transform_data = {
-            "document_id": "00000000-0000-0000-0000-000000000000",
-            "transformation_type": "summary",
-            "parameters": {},
-        }
-
-        invalid_response = await api_client.post(
-            "/api/transformations", json=invalid_transform_data, headers=headers
+        # 6. Log out; the refresh token is revoked
+        logout = await api_client.post(
+            "/api/auth/logout", json={"refresh_token": tokens["refresh_token"]}, headers=headers
         )
-        assert invalid_response.status_code == 404  # Document not found
+        assert logout.status_code == 200
+        refresh = await api_client.post("/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+        assert refresh.status_code == 401
 
-        # Create valid document and transformation
-        doc_data = {
-            "title": "Error Recovery Test Document",
-            "content": "This document tests error recovery workflows.",
-            "source_type": "text",
-        }
-
-        doc_response = await api_client.post(
-            "/api/documents", json=doc_data, headers=headers
-        )
-        assert doc_response.status_code == 201
-
-        document = doc_response.json()
-
-        # Create valid transformation
-        valid_transform_data = {
-            "document_id": document["id"],
-            "transformation_type": "summary",
-            "parameters": {"length": "brief"},
-        }
-
-        valid_response = await api_client.post(
-            "/api/transformations", json=valid_transform_data, headers=headers
-        )
-        assert valid_response.status_code in [201, 202]
-
-        # Verify system recovered and is working normally
-        health_response = await api_client.get("/api/health")
-        assert health_response.status_code == 200
-
-        health_data = health_response.json()
-        assert health_data["status"] == "healthy"
-
-
-class TestPerformanceWorkflows:
-    """Test performance-related workflows"""
-
-    @pytest.mark.e2e
-    @pytest.mark.slow
-    async def test_bulk_content_processing(
-        self, api_client: httpx.AsyncClient, performance_monitor
+    async def test_complete_upload_transform_workflow(
+        self, authenticated_client: httpx.AsyncClient, wait_for_transformation
     ):
-        """Test processing multiple pieces of content efficiently"""
-        # Login
-        login_data = {"username": "test@example.com", "password": "TestPassword123!"}
+        """Upload a file, then transform its extracted text"""
+        upload = await authenticated_client.post(
+            "/api/documents/upload",
+            data={"title": "Comprehensive Test Document", "description": "Upload workflow"},
+            files={"file": ("comprehensive_test.md", LONG_TEXT.encode(), "text/markdown")},
+        )
+        assert upload.status_code == 201, upload.text
+        document = upload.json()
 
-        login_response = await api_client.post("/api/auth/token", data=login_data)
-        assert login_response.status_code == 200
+        docs = (await authenticated_client.get("/api/documents")).json()
+        assert docs["count"] == 1
+        assert docs["documents"][0]["id"] == document["id"]
 
-        headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+        transformation = await _transform(authenticated_client, {}, document["id"], "BLOG_POST", {"word_count": 800})
+        final = await wait_for_transformation(authenticated_client, transformation["id"])
+        assert final["status"] == "COMPLETED"
+        assert final["transformation_type"] == "BLOG_POST"
 
-        # Create multiple documents quickly
-        performance_monitor.start()
-
-        documents = []
-        for i in range(5):
-            doc_data = {
-                "title": f"Bulk Processing Document {i + 1}",
-                "content": f"""
-                This is document {i + 1} for bulk processing testing.
-                It contains sufficient content to test processing capabilities
-                and performance under load conditions.
-                
-                The content varies slightly between documents to ensure
-                diverse processing scenarios are tested.
-                """,
-                "source_type": "text",
-                "metadata": {"batch": "bulk_test", "index": i},
-            }
-
-            doc_response = await api_client.post(
-                "/api/documents", json=doc_data, headers=headers
+    async def test_content_batch_workflow(
+        self, authenticated_client: httpx.AsyncClient, wait_for_transformation
+    ):
+        """Several related documents processed together all complete"""
+        started = time.perf_counter()
+        documents = [
+            await _create_text_document(
+                authenticated_client, {}, f"Batch Document {i + 1}",
+                f"Document {i + 1} of a series. " + LONG_TEXT,
             )
-            assert doc_response.status_code == 201
+            for i in range(3)
+        ]
+        transformations = [
+            await _transform(authenticated_client, {}, doc["id"], "SUMMARY", {"length": "medium"})
+            for doc in documents
+        ]
+        assert time.perf_counter() - started < 15.0  # creation doesn't wait on AI calls
 
-            documents.append(doc_response.json())
-
-        doc_creation_time = performance_monitor.stop("bulk_document_creation")
-        assert doc_creation_time < 10.0  # Should create 5 documents quickly
-
-        # Create transformations for all documents
-        performance_monitor.start()
-
-        transformations = []
-        for doc in documents:
-            transform_data = {
-                "document_id": doc["id"],
-                "transformation_type": "summary",
-                "parameters": {"length": "brief"},
-            }
-
-            transform_response = await api_client.post(
-                "/api/transformations", json=transform_data, headers=headers
-            )
-            assert transform_response.status_code in [201, 202]
-
-            transformations.append(transform_response.json())
-
-        transform_creation_time = performance_monitor.stop(
-            "bulk_transformation_creation"
+        finals = await asyncio.gather(
+            *[wait_for_transformation(authenticated_client, t["id"], timeout=90) for t in transformations]
         )
-        assert transform_creation_time < 15.0  # Should create transformations quickly
+        assert [f["status"] for f in finals] == ["COMPLETED"] * len(documents)
+        assert sorted(f["document_id"] for f in finals) == sorted(d["id"] for d in documents)
 
-        # Monitor completion time
-        performance_monitor.start()
-
-        completed_count = 0
-        for transformation in transformations:
-            for _ in range(30):  # 30 second timeout per transformation
-                status_response = await api_client.get(
-                    f"/api/transformations/{transformation['id']}/status",
-                    headers=headers,
-                )
-
-                if status_response.status_code == 200:
-                    status_data = status_response.json()
-                    if status_data["database_status"] in ["completed", "failed"]:
-                        completed_count += 1
-                        break
-
-                await asyncio.sleep(1)
-
-        completion_time = performance_monitor.stop("bulk_transformation_completion")
-
-        # In eager mode, should complete quickly
-        assert completed_count >= len(transformations) * 0.8  # At least 80% completion
-        assert completion_time < 60.0  # Should complete within reasonable time
-
-        # Verify system performance metrics
-        metrics = performance_monitor.get_metrics()
-        print("\nPerformance Metrics:")
-        print(f"Document Creation: {metrics['bulk_document_creation']:.2f}s")
-        print(
-            f"Transformation Creation: {metrics['bulk_transformation_creation']:.2f}s"
+    async def test_error_recovery_workflow(self, authenticated_client: httpx.AsyncClient, wait_for_transformation):
+        # Unknown document
+        r = await authenticated_client.post(
+            "/api/transformations",
+            json={"document_id": "00000000-0000-0000-0000-000000000000", "transformation_type": "SUMMARY", "parameters": {}},
         )
-        print(
-            f"Transformation Completion: {metrics['bulk_transformation_completion']:.2f}s"
+        assert r.status_code == 404
+
+        # Unsupported upload
+        r = await authenticated_client.post(
+            "/api/documents/upload",
+            data={"title": "Invalid File"},
+            files={"file": ("invalid.exe", b"Invalid content", "application/x-msdownload")},
         )
-        print(f"Completed Transformations: {completed_count}/{len(transformations)}")
+        assert r.status_code == 400
+
+        # Unknown transformation type
+        document = await _create_text_document(authenticated_client, {}, "Error Recovery Test Document")
+        r = await authenticated_client.post(
+            "/api/transformations",
+            json={"document_id": document["id"], "transformation_type": "INVALID_TYPE", "parameters": {}},
+        )
+        assert r.status_code == 422
+
+        # After the errors, normal work still succeeds
+        transformation = await _transform(authenticated_client, {}, document["id"])
+        final = await wait_for_transformation(authenticated_client, transformation["id"])
+        assert final["status"] == "COMPLETED"
+
+        health = (await authenticated_client.get("/api/health")).json()
+        assert health["status"] == "healthy"
 
 
 class TestUserJourneyScenarios:
     """Test realistic user journey scenarios"""
 
-    @pytest.mark.e2e
-    async def test_content_creator_journey(self, api_client: httpx.AsyncClient):
-        """Test typical content creator workflow"""
-        # Simulate a content creator who:
-        # 1. Creates initial content
-        # 2. Transforms it into multiple formats
-        # 3. Reviews and iterates
+    async def test_content_creator_journey(self, authenticated_client: httpx.AsyncClient, wait_for_transformation):
+        """Create content, repurpose it into every major format, then iterate on one result"""
+        document = await _create_text_document(authenticated_client, {}, "The Future of AI in Content Creation")
 
-        # Login
-        login_data = {"username": "test@example.com", "password": "TestPassword123!"}
+        requests = [
+            ("SUMMARY", {"length": "short", "style": "paragraph"}),
+            ("BLOG_POST", {"tone": "engaging", "target_audience": "business"}),
+            ("SOCIAL_MEDIA", {"platform": "linkedin", "hashtags": True}),
+            ("EMAIL_SEQUENCE", {"sequence_length": 3}),
+        ]
+        created = [
+            await _transform(authenticated_client, {}, document["id"], t_type, params) for t_type, params in requests
+        ]
+        assert len({t["id"] for t in created}) == len(requests)
 
-        login_response = await api_client.post("/api/auth/token", data=login_data)
-        assert login_response.status_code == 200
-
-        headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
-
-        # Create original content
-        original_content = {
-            "title": "The Future of AI in Content Creation",
-            "content": """
-            Artificial Intelligence is revolutionizing content creation across industries.
-            From automated writing assistants to sophisticated content optimization tools,
-            AI is changing how we approach content strategy and production.
-            
-            Key benefits include:
-            - Faster content generation
-            - Improved consistency
-            - Data-driven optimization
-            - Personalization at scale
-            
-            However, challenges remain:
-            - Maintaining authentic voice
-            - Ensuring quality control
-            - Balancing automation with human creativity
-            
-            The future lies in human-AI collaboration, where technology amplifies
-            human creativity rather than replacing it.
-            """,
-            "source_type": "text",
-            "metadata": {
-                "author": "content_creator",
-                "category": "ai_insights",
-                "target_audience": "business_professionals",
-            },
-        }
-
-        doc_response = await api_client.post(
-            "/api/documents", json=original_content, headers=headers
-        )
-        assert doc_response.status_code == 201
-
-        document = doc_response.json()
-        document_id = document["id"]
-
-        # Transform into multiple formats
-        transformation_requests = [
-            {
-                "transformation_type": "summary",
-                "parameters": {"length": "brief", "tone": "executive"},
-                "metadata": {"purpose": "executive_summary"},
-            },
-            {
-                "transformation_type": "blog_post",
-                "parameters": {"tone": "engaging", "include_call_to_action": True},
-                "metadata": {"purpose": "blog_publication"},
-            },
+        finals = [await wait_for_transformation(authenticated_client, t["id"]) for t in created]
+        assert [(f["transformation_type"], f["status"]) for f in finals] == [
+            (t_type, "COMPLETED") for t_type, _ in requests
         ]
 
-        created_transformations = []
-        for transform_request in transformation_requests:
-            transform_data = {**transform_request, "document_id": document_id}
-
-            transform_response = await api_client.post(
-                "/api/transformations", json=transform_data, headers=headers
-            )
-            assert transform_response.status_code in [201, 202]
-
-            created_transformations.append(transform_response.json())
-
-        # Wait for transformations to complete
-        completed_transformations = []
-        for transformation in created_transformations:
-            transformation_id = transformation["id"]
-
-            for _ in range(15):
-                status_response = await api_client.get(
-                    f"/api/transformations/{transformation_id}/status", headers=headers
-                )
-
-                if status_response.status_code == 200:
-                    status_data = status_response.json()
-                    if status_data["database_status"] == "completed":
-                        # Get final result
-                        result_response = await api_client.get(
-                            f"/api/transformations/{transformation_id}", headers=headers
-                        )
-                        assert result_response.status_code == 200
-
-                        completed_transformations.append(result_response.json())
-                        break
-                    elif status_data["database_status"] == "failed":
-                        break
-
-                await asyncio.sleep(1)
-
-        # Verify content creator has their transformed content
-        assert (
-            len(completed_transformations) >= 1
-        )  # At least one transformation completed
-
-        # Check user's content library
-        docs_response = await api_client.get("/api/documents", headers=headers)
-        assert docs_response.status_code == 200
-
-        user_docs = docs_response.json()["documents"]
-        assert any(doc["id"] == document_id for doc in user_docs)
-
-        transforms_response = await api_client.get(
-            "/api/transformations", headers=headers
+        # Iterate: refine the blog post (runs synchronously and returns a new transformation)
+        blog = finals[1]
+        refined = await authenticated_client.post(
+            f"/api/transformations/{blog['id']}/refine", json={"instruction": "Make it shorter."}
         )
-        assert transforms_response.status_code == 200
+        assert refined.status_code == 201, refined.text
+        refined_body = refined.json()
+        assert refined_body["id"] != blog["id"]
+        assert refined_body["document_id"] == document["id"]
+        assert refined_body["transformation_type"] == "BLOG_POST"
+        assert refined_body["status"] == "COMPLETED"
 
-        user_transforms = transforms_response.json()["transformations"]
-        assert len(user_transforms) >= len(created_transformations)
+        library = (await authenticated_client.get("/api/transformations")).json()
+        assert library["count"] == len(requests) + 1
