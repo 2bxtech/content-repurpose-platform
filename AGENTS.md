@@ -13,6 +13,7 @@ Context for AI coding agents (and humans) working in this repo. Keep it short an
 - `make up` / `make down`: full stack in Docker (mock AI provider when no key is set).
 - `make test`: backend unit tests. `make test-integration`: full suite against an isolated, throwaway stack.
 - `make lint`; frontend: `cd frontend && npx tsc --noEmit && npm test`.
+- `make install` also installs pre-commit hooks (ruff, gitleaks, private-key and large-file checks); `pre-commit run -a` runs them on everything.
 
 ## Invariants (don't break these)
 - **Tenancy:** every query on tenant data filters by the `workspace_id` from the signed token, never from the request body. Cross-tenant access returns 404 (403 for workspace endpoints).
