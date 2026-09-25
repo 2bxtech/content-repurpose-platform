@@ -81,13 +81,23 @@ services:
     <<: *app
     command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
     healthcheck:
-      disable: true
+      # Replies only once the worker is connected to the broker and consuming.
+      test: ["CMD-SHELL", "celery -A app.core.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5"]
+      interval: 10s
+      timeout: 15s
+      start_period: 20s
+      retries: 5
 
   beat:
     <<: *app
     command: celery -A app.core.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule
     healthcheck:
-      disable: true
+      # beat writes its schedule file once it has loaded the schedule
+      test: ["CMD-SHELL", "test -s /tmp/celerybeat-schedule"]
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 10
 
   pgadmin:
     image: dpage/pgadmin4:latest
