@@ -4,22 +4,6 @@ These tests validate the core functionality of the AI provider system.
 """
 
 import pytest
-import os
-
-# Set test environment variables
-os.environ["SECRET_KEY"] = "test-secret-key-12345678901234567890123456789012"
-os.environ["REFRESH_SECRET_KEY"] = (
-    "test-refresh-secret-key-12345678901234567890123456789012"
-)
-os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-os.environ["REDIS_URL"] = "redis://localhost:6379/1"
-
-# Add backend directory to path for imports
-import sys
-import pathlib
-
-backend_path = pathlib.Path(__file__).parent.parent / "backend"
-sys.path.insert(0, str(backend_path))
 
 from app.services.ai_providers.base import (
     AIResponse,

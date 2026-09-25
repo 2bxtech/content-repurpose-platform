@@ -1,107 +1,93 @@
 """
-Simple smoke tests to verify testing framework setup
+Smoke tests: the test environment itself, plus basic reachability of the API.
+
+Consolidates the former test_simple.py, test_basic.py and test_smoke.py.
 """
 
-import pytest
-import sys
 import os
+import sys
+
+import httpx
+import pytest
 
 
 class TestFrameworkSetup:
-    """Basic tests to verify testing framework is working"""
+    """The test environment is wired up the way conftest.py promises."""
 
     @pytest.mark.unit
     def test_python_version(self):
-        """Test that we have a compatible Python version"""
-        assert sys.version_info >= (3, 8), "Python 3.8+ is required"
+        assert sys.version_info >= (3, 11), "Python 3.11+ is required"
 
     @pytest.mark.unit
     def test_project_structure(self):
-        """Test that we have the expected project structure"""
-        # Check that we're in the right directory
         project_root = os.path.dirname(os.path.dirname(__file__))
-
-        expected_files = [
+        for file_path in [
             "backend/main.py",
             "backend/requirements.txt",
             "docker-compose.yml",
             "Makefile",
-        ]
-
-        for file_path in expected_files:
-            full_path = os.path.join(project_root, file_path)
-            assert os.path.exists(full_path), f"Expected file not found: {file_path}"
-
-    @pytest.mark.unit
-    def test_test_dependencies(self):
-        """Test that required test dependencies are available"""
-        required_modules = ["pytest", "httpx", "asyncio"]
-
-        for module_name in required_modules:
-            try:
-                __import__(module_name)
-            except ImportError:
-                pytest.fail(f"Required test dependency not available: {module_name}")
+        ]:
+            assert os.path.exists(os.path.join(project_root, file_path)), file_path
 
     @pytest.mark.unit
     async def test_async_support(self):
-        """Test that async test support is working"""
         import asyncio
 
-        # Simple async operation
-        result = await asyncio.sleep(0.1, result="async_works")
-        assert result == "async_works"
+        assert await asyncio.sleep(0.01, result="async_works") == "async_works"
 
     @pytest.mark.unit
     def test_environment_variables(self):
-        """Test that test environment variables are set correctly"""
-        # These should be set by conftest.py
-        expected_env_vars = {
-            "ENVIRONMENT": "testing",
-            "DEBUG": "true",
-            "CELERY_TASK_ALWAYS_EAGER": "true",
-        }
-
-        for var_name, expected_value in expected_env_vars.items():
-            actual_value = os.environ.get(var_name)
-            assert actual_value == expected_value, (
-                f"Environment variable {var_name} should be '{expected_value}', got '{actual_value}'"
-            )
-
-
-class TestMockServices:
-    """Test that mock services work correctly"""
+        """Set by conftest.py before the app is imported."""
+        assert os.environ.get("ENVIRONMENT") == "testing"
+        assert os.environ.get("DEBUG") == "true"
+        assert os.environ.get("SECRET_KEY")
+        assert os.environ.get("REFRESH_SECRET_KEY")
 
     @pytest.mark.unit
-    def test_mock_auth_service(self):
-        """Test that mock auth service works as expected"""
-        from tests.test_auth import MockAuthService
+    def test_app_imports(self):
+        from main import app
 
-        auth_service = MockAuthService()
+        paths = app.openapi()["paths"]
+        assert "/api/health" in paths
+        assert "/api/auth/token" in paths
 
-        # Test password validation
-        with pytest.raises(ValueError):
-            auth_service.validate_password_strength("weak")
 
-        # Strong password should not raise
-        auth_service.validate_password_strength("StrongPassword123!")
+@pytest.mark.integration
+class TestAPIReachability:
+    """The running API answers on its public, unauthenticated endpoints."""
 
-        # Test token creation and verification
-        user_data = {"user_id": "test", "email": "test@example.com"}
-        token = auth_service.create_access_token(user_data)
-        assert token == "mock-jwt-token"
+    async def test_root(self, api_client: httpx.AsyncClient):
+        response = await api_client.get("/")
+        assert response.status_code == 200
 
-        decoded = auth_service.verify_access_token(token)
-        assert decoded["user_id"] == "test-user-id"
+        data = response.json()
+        assert data["service"] == "content-repurpose-api"
+        assert data["version"]
 
-    @pytest.mark.unit
-    def test_mock_ai_provider(self, mock_ai_provider):
-        """Test that mock AI provider fixture works"""
-        assert hasattr(mock_ai_provider, "generate_completion")
-        assert hasattr(mock_ai_provider, "generate_summary")
-        assert hasattr(mock_ai_provider, "generate_blog_post")
+    async def test_health(self, api_client: httpx.AsyncClient):
+        """/api/health reports dependency status (replaces /api/health/detailed)."""
+        response = await api_client.get("/api/health")
+        assert response.status_code == 200
 
-        # Test call counting
-        initial_count = mock_ai_provider.call_count
-        mock_ai_provider.generate_completion("test prompt")
-        assert mock_ai_provider.call_count == initial_count + 1
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert "timestamp" in data
+        checks = data["checks"]
+        assert checks["database"]["status"] == "healthy"
+        assert checks["redis"]["status"] == "healthy"
+        assert "mock" in checks["ai_provider"]["providers"]
+
+    async def test_openapi_schema(self, api_client: httpx.AsyncClient):
+        response = await api_client.get("/openapi.json")
+        assert response.status_code == 200
+
+        spec = response.json()
+        assert "openapi" in spec
+        assert "info" in spec
+        assert "/api/transformations" in spec["paths"]
+
+    async def test_docs_ui(self, api_client: httpx.AsyncClient):
+        """Swagger UI is served while DEBUG is on (the dev/test stack)."""
+        response = await api_client.get("/docs")
+        assert response.status_code == 200
+        assert "swagger" in response.text.lower()
