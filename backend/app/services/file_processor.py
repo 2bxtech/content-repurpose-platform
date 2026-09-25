@@ -14,6 +14,7 @@ import tempfile
 from typing import Dict, Any, Optional, Tuple
 import logging
 import os
+import sys
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -51,14 +52,20 @@ except ImportError:
     HAS_PILLOW = False
     logging.warning("Pillow not available, preview generation disabled")
 
-# Security and validation
-try:
-    import magic
-
-    HAS_MAGIC = True
-except ImportError:
+# Security and validation. Content sniffing needs libmagic, which the Linux image
+# installs. On native Windows, python-magic loads whatever libmagic DLL is first
+# on PATH (e.g. Git for Windows' MSYS build), which can hang on import, so
+# sniffing is off there; run the stack in Docker/WSL to exercise it.
+if sys.platform == "win32":
     HAS_MAGIC = False
-    logging.warning("python-magic not available, using basic file validation")
+else:
+    try:
+        import magic
+
+        HAS_MAGIC = True
+    except ImportError:
+        HAS_MAGIC = False
+        logging.warning("python-magic not available, using basic file validation")
 
 try:
     import chardet

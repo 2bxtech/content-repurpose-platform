@@ -43,29 +43,31 @@ from app.db.models.workspace import Workspace
 pytest_plugins = []
 
 
+@pytest.fixture(scope="module")
+def db_engine():
+    """Engine for schema inspection of a migrated database.
+
+    Only runs against an explicitly provided database (make test-integration
+    sets TEST_DATABASE_URL to its throwaway stack), never a developer's own.
+    """
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("Schema tests need TEST_DATABASE_URL (make test-integration)")
+    engine = create_engine(url)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def db_inspector(db_engine):
+    """SQLAlchemy inspector for the database schema"""
+    return inspect(db_engine)
+
+
 @pytest.mark.database
 @pytest.mark.integration
 class TestSchemaValidation:
     """Validate database schemas match model definitions"""
-    
-    @pytest.fixture(scope="class", autouse=False)
-    def db_engine(self):
-        """Engine for schema inspection of a migrated database.
-
-        Only runs against an explicitly provided database (make test-integration
-        sets TEST_DATABASE_URL to its throwaway stack), never a developer's own.
-        """
-        url = os.getenv("TEST_DATABASE_URL")
-        if not url:
-            pytest.skip("Schema tests need TEST_DATABASE_URL (make test-integration)")
-        engine = create_engine(url)
-        yield engine
-        engine.dispose()
-
-    @pytest.fixture(scope="class")
-    def db_inspector(self, db_engine):
-        """Create SQLAlchemy inspector for database schema"""
-        return inspect(db_engine)
     
     def get_model_columns(self, model_class) -> Set[str]:
         """

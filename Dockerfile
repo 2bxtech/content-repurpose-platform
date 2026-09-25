@@ -1,6 +1,7 @@
 # Dockerfile for Content Repurpose API
-# bookworm (Debian 12) avoids unfixed perl CVEs present in Debian Trixie (13)
-FROM python:3.12-slim-bookworm
+# Debian 13 (trixie): as of 2026-09 Docker Scout reports 0 critical / 2 high (none
+# fixable) versus 3 critical / 12 high for bookworm. Re-check when bumping.
+FROM python:3.12-slim-trixie
 
 # Prevent Python from writing bytecode files and ensure unbuffered output
 ENV PYTHONDONTWRITEBYTECODE=1
