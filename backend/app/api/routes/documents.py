@@ -1,3 +1,4 @@
+import logging
 import os
 import ipaddress
 import socket
@@ -24,6 +25,7 @@ DOCUMENTS_DB = []
 document_id_counter = 1
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def validate_file_extension(filename: str) -> bool:
@@ -114,6 +116,8 @@ async def upload_document(
                 detail="File failed security validation",
             )
 
+    except HTTPException:
+        raise  # our own 400 above; don't let the catch-all turn it into a 500
     except ValueError as e:
         # Clean up file if processing failed
         if os.path.exists(file_path):
@@ -122,13 +126,13 @@ async def upload_document(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File processing failed: {str(e)}",
         )
-    except Exception as e:
-        # Clean up file if processing failed
+    except Exception:
+        logger.exception("Unexpected error processing upload %s", file.filename)
         if os.path.exists(file_path):
             os.remove(file_path)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error during file processing: {str(e)}",
+            detail="Unexpected error during file processing",
         )
 
     if db:
