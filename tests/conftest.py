@@ -13,6 +13,10 @@ os.environ["ENVIRONMENT"] = "testing"
 # Unit tests import app.core.config, which requires signing keys; use throwaway values.
 os.environ.setdefault("SECRET_KEY", "test-only-access-signing-key-0123456789abcdef")
 os.environ.setdefault("REFRESH_SECRET_KEY", "test-only-refresh-signing-key-0123456789abcdef")
+if not os.getenv("TEST_API_URL"):
+    # Unit mode: in-process TestClient apps must never reach a developer's local Postgres
+    # (the default component config points at localhost:5433). Port 9 is unreachable.
+    os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://unit:unit@127.0.0.1:9/unit_tests")
 os.environ["DEBUG"] = "true"
 os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
 
@@ -31,7 +35,9 @@ def mock_ai_provider():
     return provider
 
 # Test configuration
-TEST_API_URL = os.getenv("TEST_API_URL", "http://localhost:8000")
+# Integration tests only run when TEST_API_URL is set explicitly (make test-integration),
+# so a plain `pytest` never writes to whatever happens to be listening on :8000.
+TEST_API_URL = os.getenv("TEST_API_URL")
 TEST_DB_URL = (
     "postgresql://postgres:test_password@localhost:5434/content_repurpose_test"
 )
@@ -42,11 +48,13 @@ TEST_REDIS_URL = "redis://localhost:6380"
 async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     """
     Simple HTTP client for API testing.
-    Targets TEST_API_URL (default: the docker compose API on :8000).
+    Targets TEST_API_URL; skipped when it is unset.
     
     Note: Tests must explicitly request this fixture to use it.
     Schema validation tests don't request it, so they won't try to connect to API.
     """
+    if not TEST_API_URL:
+        pytest.skip("Integration test: set TEST_API_URL or run `make test-integration`")
     timeout = httpx.Timeout(30.0)
 
     async with httpx.AsyncClient(
