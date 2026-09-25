@@ -8,6 +8,7 @@
 x-app-env: &app-env
   DATABASE_URL: postgresql+asyncpg://${DATABASE_USER:-postgres}:${DATABASE_PASSWORD:-postgres_dev_password}@postgres:5432/${DATABASE_NAME:-content_repurpose}
   REDIS_URL: redis://redis:6379/0
+  REDIS_HOST: redis
   ENVIRONMENT: development
   DEBUG: "true"
   SECRET_KEY: ${SECRET_KEY:-local-dev-access-token-signing-key-not-for-prod}
@@ -70,6 +71,12 @@ services:
     <<: *app
     ports:
       - "${API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 
   worker:
     <<: *app

@@ -1,10 +1,12 @@
 .DEFAULT_GOAL := help
-.PHONY: help env up down logs migrate api worker frontend install test test-integration lint build-frontend clean
+.PHONY: help env up down logs migrate api worker beat frontend install test test-integration lint build-frontend clean
 
 PY ?= python
 VENV := .venv
 BIN := $(if $(filter Windows_NT,$(OS)),$(VENV)/Scripts,$(VENV)/bin)
-API_URL ?= http://localhost:8000
+# Integration tests get their own compose project so they never touch the dev stack's data.
+IT_API_PORT ?= 18000
+IT := POSTGRES_HOST_PORT=15433 REDIS_HOST_PORT=16379 API_HOST_PORT=$(IT_API_PORT) RATE_LIMIT_AUTH_ATTEMPTS=1000/1m RATE_LIMIT_API_CALLS=5000/1m RATE_LIMIT_TRANSFORMATIONS=1000/1m docker compose -p content-repurpose-it
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -37,6 +39,9 @@ api: ## Run the API with reload on :8000
 worker: ## Run a Celery worker
 	cd backend && ../$(BIN)/celery -A app.core.celery_app worker --loglevel=info
 
+beat: ## Run Celery beat (periodic maintenance tasks)
+	cd backend && ../$(BIN)/celery -A app.core.celery_app beat --loglevel=info
+
 frontend: ## Run the React dev server on :3000
 	cd frontend && npm start
 
@@ -50,10 +55,9 @@ lint: ## Ruff correctness checks
 test: ## Unit tests (no services needed; integration tests auto-skip)
 	$(BIN)/pytest
 
-test-integration: ## Full suite against the compose stack (starts it with relaxed rate limits)
-	RATE_LIMIT_AUTH_ATTEMPTS=1000/1m RATE_LIMIT_API_CALLS=5000/1m RATE_LIMIT_TRANSFORMATIONS=1000/1m docker compose up -d --build --wait
-	docker compose exec -T redis redis-cli FLUSHDB >/dev/null
-	TEST_API_URL=$(API_URL) $(BIN)/pytest
+test-integration: ## Full suite against a throwaway stack (own project, ports and volumes)
+	$(IT) up -d --build --wait
+	TEST_API_URL=http://localhost:$(IT_API_PORT) $(BIN)/pytest; status=$$?; $(IT) down -v; exit $$status
 
 clean: ## Remove caches and build output
 	rm -rf .pytest_cache .ruff_cache htmlcov coverage.xml frontend/build

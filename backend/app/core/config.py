@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Annotated, List, Set, Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode
@@ -259,7 +260,9 @@ class Settings(BaseSettings):
         return v
 
     class Config:
-        env_file = ".env"
+        # Repo-root .env (commands often run from backend/), then a local override.
+        # In the container neither exists and real env vars are used.
+        env_file = (str(Path(__file__).resolve().parents[3] / ".env"), ".env")
         case_sensitive = True
         extra = "ignore"  # Ignore extra fields from .env file
 

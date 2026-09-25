@@ -16,7 +16,7 @@ os.environ.setdefault("REFRESH_SECRET_KEY", "test-only-refresh-signing-key-01234
 if not os.getenv("TEST_API_URL"):
     # Unit mode: in-process TestClient apps must never reach a developer's local Postgres
     # (the default component config points at localhost:5433). Port 9 is unreachable.
-    os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://unit:unit@127.0.0.1:9/unit_tests")
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://unit:unit@127.0.0.1:9/unit_tests"
 os.environ["DEBUG"] = "true"
 os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
 
@@ -66,7 +66,8 @@ async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
         try:
             response = await client.get("/api/health")
         except httpx.TransportError as e:
-            pytest.skip(f"Integration test needs a running API at {TEST_API_URL} (make test-integration): {e}")
+            # TEST_API_URL was set on purpose, so an unreachable API is a failure, not a skip.
+            pytest.fail(f"Cannot reach test API at {TEST_API_URL}: {e}")
         if response.status_code != 200:
             pytest.fail(f"API health check failed: {response.status_code}")
 
