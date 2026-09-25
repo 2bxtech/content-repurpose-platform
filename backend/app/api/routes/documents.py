@@ -836,31 +836,4 @@ async def delete_document(
 
 
 # CORS OPTIONS handlers for documents endpoints
-@router.options("/documents/upload")
-async def documents_upload_options():
-    """Handle CORS preflight for document upload"""
-    return {"message": "OK"}
 
-
-@router.options("/documents")
-async def documents_list_options():
-    """Handle CORS preflight for documents list"""
-    return {"message": "OK"}
-
-
-@router.options("/documents/{document_id}")
-async def documents_detail_options():
-    """Handle CORS preflight for document details"""
-    return {"message": "OK"}
-
-
-@router.options("/documents/{document_id}/preview")
-async def documents_preview_options():
-    """Handle CORS preflight for document preview"""
-    return {"message": "OK"}
-
-
-@router.options("/documents/{document_id}/content")
-async def documents_content_options():
-    """Handle CORS preflight for document content"""
-    return {"message": "OK"}

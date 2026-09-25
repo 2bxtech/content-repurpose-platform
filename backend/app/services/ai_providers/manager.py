@@ -526,24 +526,12 @@ def get_ai_provider_manager() -> AIProviderManager:
     """Get the global AI provider manager instance"""
     global ai_provider_manager
     if ai_provider_manager is None:
-        # Initialize Redis client if available
-        redis_client = None
-        try:
-            import redis as redis_lib
+        # Share the process-wide client (honours REDIS_URL); None means Redis is down
+        # and usage tracking degrades to in-memory only.
+        from app.services.redis_service import redis_service
 
-            redis_client = redis_lib.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=settings.REDIS_DB,
-                password=settings.REDIS_PASSWORD if settings.REDIS_PASSWORD else None,
-                decode_responses=True,
-            )
-            # Test connection
-            redis_client.ping()
-        except Exception as e:
-            logger.warning("Redis not available for AI usage tracking: %s", e)
-            redis_client = None
-
-        ai_provider_manager = AIProviderManager(redis_client=redis_client)
+        if redis_service.redis_client is None:
+            logger.warning("Redis not available for AI usage tracking")
+        ai_provider_manager = AIProviderManager(redis_client=redis_service.redis_client)
 
     return ai_provider_manager

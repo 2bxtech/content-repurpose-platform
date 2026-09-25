@@ -19,23 +19,12 @@ class RedisService:
     def _connect(self):
         """Initialize Redis connection"""
         try:
-            if settings.REDIS_URL:
-                self.redis_client = redis.from_url(
-                    settings.REDIS_URL,
-                    decode_responses=True,
-                    socket_connect_timeout=5,
-                    socket_timeout=5,
-                )
-            else:
-                self.redis_client = redis.Redis(
-                    host=settings.REDIS_HOST,
-                    port=settings.REDIS_PORT,
-                    db=settings.REDIS_DB,
-                    password=settings.REDIS_PASSWORD if settings.REDIS_PASSWORD else None,
-                    decode_responses=True,
-                    socket_connect_timeout=5,
-                    socket_timeout=5,
-                )
+            self.redis_client = redis.from_url(
+                settings.get_redis_url(),
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5,
+            )
             self.redis_client.ping()
             logger.info("Redis connection established")
         except Exception as e:

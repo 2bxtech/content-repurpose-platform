@@ -3,4 +3,6 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "celery -A app.core.celery_app worker --loglevel=info --concurrency=2"
+# -B embeds the beat scheduler (stuck-transformation sweeper). Fine for one worker
+# service; with several, run beat as its own service instead.
+startCommand = "celery -A app.core.celery_app worker -B --loglevel=info --concurrency=2"

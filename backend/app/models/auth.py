@@ -14,6 +14,12 @@ class UserBase(BaseModel):
     email: EmailStr
     username: str = Field(..., min_length=3, max_length=50)
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        # One account per mailbox: "Admin@x.com" and "admin@x.com" are the same user.
+        return v.lower()
+
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8, max_length=128)

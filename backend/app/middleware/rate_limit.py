@@ -43,7 +43,7 @@ class RateLimitMiddleware:
 
     def _should_skip_rate_limiting(self, path: str) -> bool:
         """Determine if rate limiting should be skipped for this path"""
-        skip_paths = ["/docs", "/redoc", "/openapi.json", "/health", "/favicon.ico"]
+        skip_paths = ["/docs", "/redoc", "/openapi.json", "/api/health", "/favicon.ico"]
         return any(path.startswith(skip_path) for skip_path in skip_paths)
 
     def _apply_rate_limit(self, request: Request):

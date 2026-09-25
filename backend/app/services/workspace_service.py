@@ -19,7 +19,10 @@ class WorkspaceService:
     async def set_workspace_context(self, db: AsyncSession, workspace_id: uuid.UUID):
         """Set the PostgreSQL session variable for RLS (transaction-scoped)"""
         try:
-            await db.execute(text(f"SET LOCAL app.workspace_id = '{workspace_id}'"))
+            # set_config(..., is_local => true) == SET LOCAL, but bind-parameterised.
+            await db.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": str(workspace_id)}
+            )
             logger.debug(f"Set workspace context: {workspace_id}")
         except Exception as e:
             logger.error(f"Failed to set workspace context: {e}")

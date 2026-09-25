@@ -2,6 +2,8 @@
 # Production-grade async SQLAlchemy configuration
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from fastapi import HTTPException
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
 from .config import settings
 import logging
@@ -48,7 +50,7 @@ class DatabaseConfig:
             'pool_timeout': 30,
             'pool_recycle': 3600,
             'pool_pre_ping': True,
-            'echo': settings.DEBUG,
+            'echo': settings.SQL_ECHO,
         }
 
 def _initialize_engine():
@@ -96,12 +98,12 @@ async def get_db_session():
 
     async with session_factory() as session:
         try:
-            # Test the connection
-            await session.execute(text("SELECT 1"))
-            yield session
-            
-        except Exception as e:
-            logger.error(f"Database session error: {e}")
+            yield session  # stale connections are handled by pool_pre_ping
+        except (HTTPException, RequestValidationError):
+            await session.rollback()  # expected 4xx; not a database error
+            raise
+        except Exception:
+            logger.exception("Database session error")
             await session.rollback()
             raise
         finally:

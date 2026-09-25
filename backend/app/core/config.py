@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from typing import Annotated, List, Set, Optional
+from urllib.parse import quote
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode
 
@@ -29,6 +30,16 @@ class Settings(BaseSettings):
     RATE_LIMIT_TRANSFORMATIONS: str = "30/1h"  # 30 transformations per hour
     TRUST_PROXY_HEADERS: bool = False
 
+    # Comma-separated user IDs allowed to use operator endpoints (global AI provider
+    # config, cost data, connection stats). Empty = nobody. IDs rather than emails:
+    # registration doesn't verify email ownership, so an email allowlist could be
+    # claimed by whoever registers the address first.
+    PLATFORM_ADMIN_USER_IDS: str = ""
+
+    @property
+    def platform_admin_user_ids(self) -> Set[str]:
+        return {u.strip().lower() for u in self.PLATFORM_ADMIN_USER_IDS.split(",") if u.strip()}
+
     # Redis settings for session management and rate limiting
     # REDIS_URL takes priority (Railway provides this as a single URL)
     REDIS_URL: Optional[str] = Field(default=None, description="Full Redis URL, e.g. redis://:password@host:6379")
@@ -40,27 +51,22 @@ class Settings(BaseSettings):
     # Celery settings for background task processing
     CELERY_BROKER_URL: str = Field(default="")
     CELERY_RESULT_BACKEND: str = Field(default="")
-    CELERY_TASK_ALWAYS_EAGER: bool = Field(default=False)  # Set to True for testing
+    # "celery": POST /api/transformations enqueues to a worker (default).
+    # "inline": run the AI call in-request, for local runs without a worker.
+    TRANSFORMATION_EXECUTION: str = Field(default="celery", pattern="^(celery|inline)$")
+
+    def get_redis_url(self) -> str:
+        """REDIS_URL if set, otherwise built from the REDIS_* components."""
+        if self.REDIS_URL:
+            return self.REDIS_URL
+        auth = f":{quote(self.REDIS_PASSWORD, safe='')}@" if self.REDIS_PASSWORD else ""
+        return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     def get_celery_broker_url(self) -> str:
-        """Construct Celery broker URL"""
-        if self.CELERY_BROKER_URL:
-            return self.CELERY_BROKER_URL
-        if self.REDIS_URL:
-            return self.REDIS_URL
-        if self.REDIS_PASSWORD:
-            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
-        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        return self.CELERY_BROKER_URL or self.get_redis_url()
 
     def get_celery_result_backend(self) -> str:
-        """Construct Celery result backend URL"""
-        if self.CELERY_RESULT_BACKEND:
-            return self.CELERY_RESULT_BACKEND
-        if self.REDIS_URL:
-            return self.REDIS_URL
-        if self.REDIS_PASSWORD:
-            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
-        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        return self.CELERY_RESULT_BACKEND or self.get_redis_url()
 
     # AI Provider Configuration (Enhanced multi-provider support with failover)
     AI_PROVIDER: str = Field(
@@ -142,6 +148,7 @@ class Settings(BaseSettings):
 
     # Sync database URL for Alembic migrations
     DATABASE_URL_SYNC: Optional[str] = Field(default=None)
+    SQL_ECHO: bool = False  # log every SQL statement (noisy; for debugging only)
 
     def get_database_url(self, async_driver: bool = True) -> str:
         """Construct database URL if not provided.

@@ -60,7 +60,6 @@ async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     async with httpx.AsyncClient(
         base_url=TEST_API_URL,
         timeout=timeout,
-        headers={"Content-Type": "application/json"},
     ) as client:
         # Verify API is accessible
         try:

@@ -6,6 +6,7 @@ Handles WebSocket connections, real-time messaging, and presence tracking.
 from fastapi import (
     APIRouter,
     Depends,
+    HTTPException,
     Query,
     WebSocket,
     WebSocketDisconnect,
@@ -14,10 +15,13 @@ from fastapi import (
 )
 from typing import Dict, Any
 import json
+import logging
 
 from app.core.websocket_manager import manager, WebSocketMessage
 from app.core.websocket_auth import get_websocket_user
-from app.api.routes.auth import get_current_active_user
+from app.api.routes.auth import get_current_active_user, require_platform_admin
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -134,14 +138,15 @@ async def websocket_endpoint(
                     await manager.send_to_connection(connection_id, presence_message)
 
                 elif message_type == "workspace_message":
-                    # Broadcast message to workspace
-                    broadcast_message = WebSocketMessage(
-                        type="workspace_message",
-                        data=message_data.get("data", {}),
-                        sender_id=str(user["id"]),
-                    )
-                    await manager.broadcast_to_workspace(
-                        workspace_id, broadcast_message
+                    # Fan out via Redis so members connected to other replicas receive it
+                    await manager.fan_out(
+                        WebSocketMessage(
+                            type="workspace_message",
+                            data=message_data.get("data", {}),
+                            sender_id=str(user["id"]),
+                            target="workspace",
+                            target_id=workspace_id,
+                        )
                     )
 
                 else:
@@ -180,14 +185,13 @@ async def websocket_endpoint(
             await manager.disconnect(connection_id)
 
     except Exception as e:
-        # Authentication or other errors
-        print(f"WebSocket connection error: {e}")
+        logger.info("WebSocket closed with error: %s", e)
         if connection_id:
             await manager.disconnect(connection_id)
         # Send error and close connection
         try:
-            await websocket.close(code=1008, reason=str(e))
-        except:
+            await websocket.close(code=1008, reason="Connection rejected")
+        except Exception:
             pass
 
 
@@ -195,34 +199,26 @@ async def websocket_endpoint(
 async def broadcast_message(
     message_data: Dict[str, Any], current_user: dict = Depends(get_current_active_user)
 ):
-    """
-    HTTP endpoint to broadcast messages via WebSocket
+    """Broadcast an event to the caller's own workspace.
 
-    This is primarily for server-side broadcasting (e.g., from Celery tasks)
+    The target is always the authenticated user's workspace; client-supplied
+    targets are ignored so one tenant can never message another.
     """
+    workspace_id = current_user.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No workspace")
     message = WebSocketMessage(
         type=message_data.get("type", "broadcast"),
         data=message_data.get("data", {}),
-        target=message_data.get("target", "broadcast"),
-        target_id=message_data.get("target_id"),
+        sender_id=str(current_user["id"]),
+        target="workspace",
+        target_id=str(workspace_id),
     )
-
-    if message.target == "workspace" and message.target_id:
-        await manager.broadcast_to_workspace(message.target_id, message)
-    elif message.target == "user" and message.target_id:
-        await manager.send_to_user(message.target_id, message)
-    else:
-        await manager.broadcast_to_all(message)
-
+    await manager.fan_out(message)
     return {"status": "message_sent", "type": message.type}
 
 
 @router.get("/ws/stats")
-async def get_websocket_stats():
-    """
-    Get WebSocket connection statistics
-
-    TODO: Add admin authentication
-    """
-    stats = manager.get_connection_count()
-    return {"websocket_stats": stats, "status": "ok"}
+async def get_websocket_stats(current_user: dict = Depends(require_platform_admin)):
+    """Connection counts for this API process (operator only)."""
+    return {"websocket_stats": manager.get_connection_count(), "status": "ok"}
