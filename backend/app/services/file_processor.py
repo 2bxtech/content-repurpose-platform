@@ -104,6 +104,7 @@ class FileProcessor:
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "application/vnd.ms-word.document.macroEnabled.12",
                 "application/octet-stream",  # Sometimes browsers send this for .docx
+                "application/zip",  # some libmagic builds report DOCX as its container
             ],
             "txt": ["text/plain", "text/txt"],
             "md": ["text/markdown", "text/plain", "text/x-markdown"],
@@ -196,29 +197,35 @@ class FileProcessor:
         if file_ext not in self.supported_types:
             raise ValueError(f"Unsupported file type: .{file_ext}")
 
-        # MIME type validation using magic bytes if available
-        if HAS_MAGIC:
-            try:
-                detected_mime = magic.from_buffer(content, mime=True)
-                expected_mimes = self.supported_types[file_ext]
-
-                # Special handling for text files with generic MIME types
-                if file_ext in ["txt", "md"] and detected_mime.startswith("text/"):
-                    pass  # Allow any text MIME type
-                elif detected_mime not in expected_mimes:
-                    raise ValueError(
-                        f"MIME type mismatch: detected '{detected_mime}' for .{file_ext} file"
-                    )
-            except Exception as e:
-                logger.warning(f"MIME detection failed: {e}")
-
-        # Check for dangerous file signatures
+        # Check for dangerous file signatures (first, for the most specific error)
         for dangerous_sig, description in self.dangerous_signatures.items():
             if content.startswith(dangerous_sig):
                 if "Executable" in description:
                     raise ValueError(
                         f"Dangerous file signature detected: {description}"
                     )
+
+        # Text uploads are whatever text they are (JSON, CSV, code...), and libmagic
+        # labels many of those application/*, so they're checked for being text at
+        # all rather than against a MIME list.
+        if file_ext in ("txt", "md"):
+            if b"\x00" in content[:8192]:
+                raise ValueError(f"File content is binary, not a .{file_ext} text file")
+
+        # Binary formats: the bytes must look like the extension claims (a script
+        # renamed to .pdf is rejected). Only a failure of the sniffer itself is
+        # tolerated; a detected mismatch is a validation error.
+        elif HAS_MAGIC:
+            try:
+                detected_mime = magic.from_buffer(content, mime=True)
+            except Exception as e:
+                detected_mime = None
+                logger.warning(f"MIME detection failed: {e}")
+
+            if detected_mime and detected_mime not in self.supported_types[file_ext]:
+                raise ValueError(
+                    f"File content ({detected_mime}) doesn't match its .{file_ext} extension"
+                )
 
         # Basic malicious pattern detection
         content_lower = content.lower()

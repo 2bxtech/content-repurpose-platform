@@ -167,3 +167,45 @@ class TestFileProcessorStandalone:
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v", "--tb=short"])
+
+
+class TestContentSniffing:
+    """The bytes must match the extension; needs libmagic (skipped where it's absent)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_magic(self):
+        from app.services import file_processor as fp
+
+        if not fp.HAS_MAGIC:
+            pytest.skip("libmagic not available")
+
+    @pytest.fixture
+    def processor(self):
+        return FileProcessor()
+
+    async def test_real_pdf_is_accepted(self, processor):
+        import fitz
+
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "A genuine PDF")
+        await processor._validate_file_security(doc.tobytes(), "report.pdf")
+
+    async def test_script_renamed_to_pdf_is_rejected(self, processor):
+        script = b"#!/bin/sh\necho not really a pdf\n"
+        with pytest.raises(ValueError, match="doesn't match its .pdf extension"):
+            await processor._validate_file_security(script, "report.pdf")
+
+
+class TestTextUploads:
+    """Text files are checked for being text, not against a MIME list."""
+
+    @pytest.fixture
+    def processor(self):
+        return FileProcessor()
+
+    async def test_json_in_a_txt_file_is_accepted(self, processor):
+        await processor._validate_file_security(b'{"title": "notes", "items": [1, 2]}\n', "data.txt")
+
+    async def test_binary_in_a_txt_file_is_rejected(self, processor):
+        with pytest.raises(ValueError, match="binary"):
+            await processor._validate_file_security(b"PK\x03\x04\x00\x00binary", "notes.txt")
