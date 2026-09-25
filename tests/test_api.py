@@ -205,9 +205,10 @@ class TestTransformationEndpoints:
         assert transformation["document_id"] == test_document["id"]
         assert transformation["transformation_type"] == transformation_data["transformation_type"]
         assert transformation["parameters"] == transformation_data["parameters"]
-        # Queued for the Celery worker rather than run inline
-        assert transformation["status"] in ("PENDING", "PROCESSING")
+        # Queued for the Celery worker (task_id proves it). A fast worker may already
+        # have finished by the time the response is built, so any live status is valid.
         assert transformation["task_id"]
+        assert transformation["status"] in ("PENDING", "PROCESSING", "COMPLETED")
 
     async def test_list_transformations(self, authenticated_client: httpx.AsyncClient, test_document, sample_transformation_data):
         response = await authenticated_client.get("/api/transformations")

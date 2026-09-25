@@ -36,7 +36,8 @@ class TestCeleryIntegration:
         transformation = response.json()
         assert transformation["id"]
         assert transformation["task_id"]
-        assert transformation["status"] in ("PENDING", "PROCESSING")
+        # The worker can finish before the create response is built.
+        assert transformation["status"] in ("PENDING", "PROCESSING", "COMPLETED")
 
     async def test_transformation_status_tracking(
         self,
