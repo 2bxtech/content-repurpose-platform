@@ -124,28 +124,6 @@ async def test_database_connection():
     except Exception as e:
         return False, f"Database connection failed: {e}"
 
-async def init_db():
-    """Initialize database and create tables"""
-    engine, _ = _initialize_engine()
-    
-    if not engine:
-        logger.warning("⚠️ Database not configured, skipping table creation")
-        return
-    
-    try:
-        # Import all models to ensure they're registered
-        from app.core.models import Base
-        
-        async with engine.begin() as conn:
-            # Create all tables
-            await conn.run_sync(Base.metadata.create_all)
-            
-        logger.info("✅ Database tables created/verified")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to create database tables: {e}")
-        raise
-
 async def close_db():
     """Close database connections gracefully"""
     global engine, async_session_factory

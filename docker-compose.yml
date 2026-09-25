@@ -3,11 +3,17 @@
 #   docker compose --profile tools up -d   -> also pgAdmin and Redis Commander
 #
 # Values are read from .env when present; defaults work without one.
-# With no AI key set, the API uses the built-in mock provider (development only).
+# With no AI key set, the API uses the built-in mock provider (development only;
+# it is never registered alongside a real provider).
 
 x-app-env: &app-env
   DATABASE_URL: postgresql+asyncpg://${DATABASE_USER:-postgres}:${DATABASE_PASSWORD:-postgres_dev_password}@postgres:5432/${DATABASE_NAME:-content_repurpose}
   REDIS_URL: redis://redis:6379/0
+  # Blank the more specific URLs so a host-oriented .env (loaded below) can't point
+  # containers at another database or broker; they fall back to the two above.
+  DATABASE_URL_SYNC: ""
+  CELERY_BROKER_URL: ""
+  CELERY_RESULT_BACKEND: ""
   ENVIRONMENT: development
   DEBUG: "true"
   SECRET_KEY: ${SECRET_KEY:-local-dev-access-token-signing-key-not-for-prod}
@@ -24,6 +30,11 @@ x-app-env: &app-env
 x-app: &app
   build: .
   restart: unless-stopped
+  # Every other setting from .env (admin IDs, limits, AI tuning...) reaches the
+  # containers; the entries in `environment` override it for container networking.
+  env_file:
+    - path: .env
+      required: false
   environment: *app-env
   depends_on:
     postgres:

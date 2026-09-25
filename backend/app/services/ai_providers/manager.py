@@ -126,9 +126,10 @@ class AIProviderManager:
                 api_key=settings.CLAUDE_API_KEY
             )
 
-        # Mock responses are useful locally and in tests, but fabricated content must
-        # never be returned as a successful production transformation.
-        if settings.ENVIRONMENT.lower() != "production":
+        # Mock responses let the stack run locally and in CI without keys, but only
+        # as a stand-in: never in production, and never as a failover behind a real
+        # provider (a failed real call must surface as FAILED, not as canned text).
+        if settings.ENVIRONMENT.lower() != "production" and not self.providers:
             self.provider_configs["mock"] = ProviderConfig(
                 provider_type=AIProviderType.MOCK,
                 api_key="mock-key",
