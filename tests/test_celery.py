@@ -99,6 +99,32 @@ class TestCeleryErrorHandling:
 
 @pytest.mark.unit
 @pytest.mark.celery
+class _FakeSession:
+    """Just enough AsyncSession for the executor: records the terminal UPDATE and
+    applies it on refresh, the way reloading the row would."""
+
+    def __init__(self, rowcount: int = 1):
+        self.commits = 0
+        self.updates = []
+        self.rowcount = rowcount
+
+    async def commit(self):
+        self.commits += 1
+
+    async def rollback(self):
+        pass
+
+    async def execute(self, stmt):
+        params = stmt.compile().params
+        self.updates.append({k: v for k, v in params.items() if not k.endswith("_1")})
+        return SimpleNamespace(rowcount=self.rowcount)
+
+    async def refresh(self, obj):
+        if self.rowcount and self.updates:
+            for key, value in self.updates[-1].items():
+                setattr(obj, key, value)
+
+
 class TestTransformationRunner:
     """The code the worker runs, with the AI provider manager replaced"""
 
@@ -114,7 +140,7 @@ class TestTransformationRunner:
         )
 
     async def test_ai_service_failure_handling(self):
-        db = AsyncMock()
+        db = _FakeSession()
         manager = MagicMock()
         manager.generate_text = AsyncMock(side_effect=AIProviderError("all providers down", "openai"))
         transformation = self._transformation()
@@ -127,10 +153,10 @@ class TestTransformationRunner:
         assert "all providers down" in result.error_message
         assert result.result is None
         # PROCESSING is committed before the call, the terminal state after it
-        assert db.commit.await_count == 2
+        assert db.commits == 2
 
     async def test_success_records_result_and_usage(self):
-        db = AsyncMock()
+        db = _FakeSession()
         usage = SimpleNamespace(total_tokens=30, input_tokens=10, output_tokens=20, total_cost=0.01)
         manager = MagicMock()
         manager.generate_text = AsyncMock(
@@ -145,10 +171,11 @@ class TestTransformationRunner:
         assert result.result == "summary text"
         assert result.ai_provider == "mock"
         assert result.tokens_used == 30
+        assert result.ai_cost == 0.01
         assert result.error_message is None
 
     async def test_empty_content_fails_without_calling_provider(self):
-        db = AsyncMock()
+        db = _FakeSession()
         manager = MagicMock()
         manager.generate_text = AsyncMock()
         transformation = self._transformation()
@@ -158,6 +185,22 @@ class TestTransformationRunner:
 
         assert result.status == TransformationStatus.FAILED
         manager.generate_text.assert_not_awaited()
+
+    async def test_late_result_does_not_overwrite_a_timed_out_row(self):
+        # The sweeper already failed the row, so the conditional UPDATE matches nothing.
+        db = _FakeSession(rowcount=0)
+        usage = SimpleNamespace(total_tokens=1, input_tokens=1, output_tokens=0, total_cost=0.0)
+        manager = MagicMock()
+        manager.generate_text = AsyncMock(
+            return_value=SimpleNamespace(content="late", provider="mock", usage_metrics=usage)
+        )
+        transformation = self._transformation()
+
+        with patch("app.services.transformation_runner.get_ai_provider_manager", return_value=manager):
+            result = await execute_transformation(db, transformation, "Some document text")
+
+        assert result.result is None
+        assert result.status != TransformationStatus.COMPLETED
 
 
 @pytest.mark.integration
