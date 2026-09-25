@@ -4,8 +4,6 @@
 
 A multi-tenant web app that turns one piece of long-form content (a pasted draft, an uploaded PDF/DOCX, or a URL) into a blog post, social posts, an email sequence, a newsletter or a summary. Users work inside workspaces. Generation runs on background workers, and results stream back to the browser over WebSockets. The AI layer sits behind a provider abstraction with failover and per-call cost tracking.
 
-**Live demo:** [DEMO_URL]
-
 | Quick transform | Result with refine, export and live status |
 |---|---|
 | ![Quick transform](docs/images/quick-transform.png) | ![Transformation result](docs/images/transformation-result.png) |
