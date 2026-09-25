@@ -1,0 +1,2 @@
+# Placeholder value in the first .env.example ("replace-with-32-plus-char-secret-key"); not a secret.
+25718ac9b4f39ea3b63033a0e5283fa9bbfdeede:.env.example:generic-api-key:5

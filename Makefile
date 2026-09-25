@@ -57,7 +57,8 @@ test: ## Unit tests (no services needed; integration tests auto-skip)
 
 test-integration: ## Full suite against a throwaway stack (own project, ports and volumes)
 	$(IT) up -d --build --wait
-	TEST_API_URL=http://localhost:$(IT_API_PORT) $(BIN)/pytest; status=$$?; $(IT) down -v; exit $$status
+	TEST_API_URL=http://localhost:$(IT_API_PORT) TEST_DATABASE_URL=postgresql://postgres:postgres_dev_password@localhost:15433/content_repurpose \
+		$(BIN)/pytest; status=$$?; $(IT) down -v; exit $$status
 
 clean: ## Remove caches and build output
 	rm -rf .pytest_cache .ruff_cache htmlcov coverage.xml frontend/build

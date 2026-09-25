@@ -21,6 +21,8 @@ They connect directly to the test database for schema inspection.
 """
 
 import pytest
+import os
+
 from sqlalchemy import inspect, create_engine
 from typing import Set
 from pathlib import Path
@@ -48,14 +50,18 @@ class TestSchemaValidation:
     
     @pytest.fixture(scope="class", autouse=False)
     def db_engine(self):
-        """Create database engine for schema inspection"""
-        # Use dev database URL (port 5433) - the running PostgreSQL container
-        # Password from docker-compose.yml: ${DATABASE_PASSWORD:-postgres_dev_password}
-        TEST_DB_URL = "postgresql://postgres:postgres_dev_password@localhost:5433/content_repurpose"
-        engine = create_engine(TEST_DB_URL)
+        """Engine for schema inspection of a migrated database.
+
+        Only runs against an explicitly provided database (make test-integration
+        sets TEST_DATABASE_URL to its throwaway stack), never a developer's own.
+        """
+        url = os.getenv("TEST_DATABASE_URL")
+        if not url:
+            pytest.skip("Schema tests need TEST_DATABASE_URL (make test-integration)")
+        engine = create_engine(url)
         yield engine
         engine.dispose()
-    
+
     @pytest.fixture(scope="class")
     def db_inspector(self, db_engine):
         """Create SQLAlchemy inspector for database schema"""
