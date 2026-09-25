@@ -1,310 +1,211 @@
 """
-Phase 7: AI Provider Management API Integration Tests
+AI provider management API (/api/providers/*).
 
-Tests for the AI provider management API endpoints including:
-- Provider status and configuration
-- Cost tracking and usage analytics
-- Provider testing and validation
-- Selection strategy management
-
-These are INTEGRATION tests that test the API endpoints with a running server.
+Most endpoints are operator-only (require_platform_admin) and act on the in-process
+provider manager, so their behaviour is tested in-process with the admin dependency
+overridden. The live stack is used to check who may call them.
 """
 
-import pytest
 import asyncio
+import copy
+import time
+
 import httpx
-import sys
-import os
+import pytest
 
-# Add backend to Python path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+from app.api.routes.auth import require_platform_admin
+from app.services.ai_providers import get_ai_provider_manager
+
+ADMIN_GET_ENDPOINTS = [
+    "/api/providers/status",
+    "/api/providers/costs",
+    "/api/providers/statistics",
+]
+ADMIN_POST_ENDPOINTS = [
+    ("/api/providers/test", {"provider": "mock"}),
+    ("/api/providers/mock/validate", {}),
+    ("/api/providers/validate-all", {}),
+    ("/api/providers/mock/reset-limits", {}),
+]
+ADMIN_PUT_ENDPOINTS = [
+    ("/api/providers/mock/config", {"enabled": True}),
+    ("/api/providers/strategy", {"strategy": "round_robin"}),
+]
 
 
+@pytest.fixture
+def admin_client(unit_client, fake_user):
+    """In-process client whose user passes the platform-admin gate.
+
+    Restores the shared provider manager's config and strategy afterwards.
+    """
+    from main import app
+
+    manager = get_ai_provider_manager()
+    saved_configs = copy.deepcopy(manager.provider_configs)
+    saved_strategy = manager.selection_strategy
+
+    app.dependency_overrides[require_platform_admin] = lambda: fake_user
+    try:
+        yield unit_client
+    finally:
+        manager.provider_configs.clear()
+        manager.provider_configs.update(saved_configs)
+        manager.set_selection_strategy(saved_strategy)
+
+
+@pytest.mark.unit
 class TestAIProviderAPIEndpoints:
-    """Test AI provider management API endpoints"""
+    """Endpoint behaviour for a platform admin"""
 
-    @pytest.mark.integration
-    async def test_get_provider_status(self, authenticated_client: httpx.AsyncClient):
-        """Test getting provider status"""
-        response = await authenticated_client.get("/api/ai/providers/status")
+    def test_get_provider_status(self, admin_client):
+        response = admin_client.get("/api/providers/status")
         assert response.status_code == 200
 
         data = response.json()
-        assert "providers" in data
-        assert "selection_strategy" in data
-        assert "total_providers" in data
-        assert "available_providers" in data
-
-        # Should have at least the mock provider
         assert data["total_providers"] >= 1
-        assert "mock" in data["providers"]
-
-        # Check provider structure
+        assert data["available_providers"] >= 1
+        assert data["selection_strategy"]
         mock_provider = data["providers"]["mock"]
-        assert "provider_info" in mock_provider
-        assert "configuration" in mock_provider
-        assert "usage" in mock_provider
-        assert "performance" in mock_provider
+        for section in ("provider_info", "configuration", "usage", "performance"):
+            assert section in mock_provider
 
-    @pytest.mark.integration
-    async def test_get_cost_summary(self, authenticated_client: httpx.AsyncClient):
-        """Test getting cost summary"""
-        response = await authenticated_client.get("/api/ai/providers/costs")
+    def test_get_cost_summary(self, admin_client):
+        response = admin_client.get("/api/providers/costs")
         assert response.status_code == 200
 
         data = response.json()
-        assert "summary" in data
-        assert "period_hours" in data
+        assert data["period_hours"] == 24
+        assert "cost" in data["summary"]["total"]
+        assert "requests" in data["summary"]["total"]
 
-        summary = data["summary"]
-        assert "total" in summary
-        assert "cost" in summary["total"]
-        assert "requests" in summary["total"]
-
-    @pytest.mark.integration
-    async def test_get_cost_summary_custom_period(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test getting cost summary with custom time period"""
-        response = await authenticated_client.get("/api/ai/providers/costs?hours=48")
+    def test_get_cost_summary_custom_period(self, admin_client):
+        response = admin_client.get("/api/providers/costs?hours=48")
         assert response.status_code == 200
+        assert response.json()["period_hours"] == 48
 
-        data = response.json()
-        assert data["period_hours"] == 48
-
-    @pytest.mark.integration
-    async def test_test_provider(self, authenticated_client: httpx.AsyncClient):
-        """Test testing a specific provider"""
-        test_data = {
-            "provider": "mock",
-            "test_prompt": "Test AI provider functionality",
-        }
-
-        response = await authenticated_client.post(
-            "/api/ai/providers/test", json=test_data
+    def test_test_provider(self, admin_client):
+        response = admin_client.post(
+            "/api/providers/test", json={"provider": "mock", "test_prompt": "Test AI provider functionality"}
         )
         assert response.status_code == 200
 
         data = response.json()
-        assert "success" in data
-        assert "provider" in data
-        assert "model" in data
-        assert "processing_time_ms" in data
-
-        if data["success"]:
-            assert "response_content" in data
-            assert "usage_metrics" in data
-            assert len(data["response_content"]) > 0
-        else:
-            assert "error_message" in data
-
-    @pytest.mark.integration
-    async def test_test_nonexistent_provider(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test testing a non-existent provider"""
-        test_data = {"provider": "nonexistent", "test_prompt": "This should fail"}
-
-        response = await authenticated_client.post(
-            "/api/ai/providers/test", json=test_data
-        )
-        assert response.status_code == 404
-
-        data = response.json()
-        assert "detail" in data
-        assert "not found" in data["detail"].lower()
-
-    @pytest.mark.integration
-    async def test_validate_provider(self, authenticated_client: httpx.AsyncClient):
-        """Test validating a specific provider"""
-        response = await authenticated_client.post("/api/ai/providers/mock/validate")
-        assert response.status_code == 200
-
-        data = response.json()
-        assert "provider" in data
-        assert "valid" in data
-        assert "message" in data
+        assert data["success"] is True
         assert data["provider"] == "mock"
-        assert data["valid"] is True  # Mock provider should always validate
+        assert data["model"]
+        assert data["processing_time_ms"] >= 0
+        assert data["response_content"]
+        assert {"input_tokens", "output_tokens", "total_cost"} <= set(data["usage_metrics"])
 
-    @pytest.mark.integration
-    async def test_validate_nonexistent_provider(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test validating a non-existent provider"""
-        response = await authenticated_client.post(
-            "/api/ai/providers/nonexistent/validate"
-        )
+    def test_test_nonexistent_provider(self, admin_client):
+        response = admin_client.post("/api/providers/test", json={"provider": "nonexistent"})
         assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
 
-    @pytest.mark.integration
-    async def test_validate_all_providers(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test validating all providers"""
-        response = await authenticated_client.post("/api/ai/providers/validate-all")
+    def test_validate_provider(self, admin_client):
+        response = admin_client.post("/api/providers/mock/validate")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["provider"] == "mock"
+        assert data["valid"] is True
+        assert data["message"]
+
+    def test_validate_nonexistent_provider(self, admin_client):
+        assert admin_client.post("/api/providers/nonexistent/validate").status_code == 404
+
+    def test_validate_all_providers(self, admin_client, monkeypatch):
+        # Keep real providers from making network calls with whatever keys are configured
+        manager = get_ai_provider_manager()
+
+        async def only_mock():
+            return {name: name == "mock" for name in manager.providers}
+
+        monkeypatch.setattr(manager, "validate_all_providers", only_mock)
+
+        response = admin_client.post("/api/providers/validate-all")
         assert response.status_code == 200
 
         data = response.json()
-        assert "validation_results" in data
-        assert "valid_providers" in data
-        assert "invalid_providers" in data
-
-        # Mock provider should be valid
-        assert "mock" in data["validation_results"]
         assert data["validation_results"]["mock"] is True
         assert "mock" in data["valid_providers"]
+        assert "mock" not in data["invalid_providers"]
 
-    @pytest.mark.integration
-    async def test_update_provider_config(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test updating provider configuration"""
+    def test_update_provider_config(self, admin_client):
         config_update = {
             "enabled": True,
             "priority": 2,
             "max_requests_per_minute": 100,
             "max_cost_per_hour": 20.0,
         }
-
-        response = await authenticated_client.put(
-            "/api/ai/providers/mock/config", json=config_update
-        )
+        response = admin_client.put("/api/providers/mock/config", json=config_update)
         assert response.status_code == 200
 
         data = response.json()
-        assert "provider" in data
-        assert "message" in data
-        assert "config" in data
         assert data["provider"] == "mock"
+        assert data["config"] == config_update
+        assert get_ai_provider_manager().provider_configs["mock"].priority == 2
 
-        # Verify the configuration was updated
-        config = data["config"]
-        assert config["enabled"] == config_update["enabled"]
-        assert config["priority"] == config_update["priority"]
-        assert (
-            config["max_requests_per_minute"]
-            == config_update["max_requests_per_minute"]
-        )
-        assert config["max_cost_per_hour"] == config_update["max_cost_per_hour"]
-
-    @pytest.mark.integration
-    async def test_update_nonexistent_provider_config(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test updating configuration for non-existent provider"""
-        config_update = {"enabled": False}
-
-        response = await authenticated_client.put(
-            "/api/ai/providers/nonexistent/config", json=config_update
-        )
+    def test_update_nonexistent_provider_config(self, admin_client):
+        response = admin_client.put("/api/providers/nonexistent/config", json={"enabled": False})
         assert response.status_code == 404
 
-    @pytest.mark.integration
-    async def test_update_selection_strategy(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test updating provider selection strategy"""
-        strategies = ["primary_failover", "round_robin", "fastest", "least_cost"]
-
-        for strategy in strategies:
-            strategy_update = {"strategy": strategy}
-
-            response = await authenticated_client.put(
-                "/api/ai/providers/strategy", json=strategy_update
-            )
+    def test_update_selection_strategy(self, admin_client):
+        for strategy in ["primary_failover", "round_robin", "fastest", "least_cost"]:
+            response = admin_client.put("/api/providers/strategy", json={"strategy": strategy})
             assert response.status_code == 200
+            assert response.json()["strategy"] == strategy
+            assert get_ai_provider_manager().selection_strategy.value == strategy
 
-            data = response.json()
-            assert "message" in data
-            assert "strategy" in data
-            assert data["strategy"] == strategy
+    def test_update_invalid_selection_strategy(self, admin_client):
+        response = admin_client.put("/api/providers/strategy", json={"strategy": "invalid_strategy"})
+        assert response.status_code == 422
 
-    @pytest.mark.integration
-    async def test_update_invalid_selection_strategy(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test updating with invalid selection strategy"""
-        strategy_update = {"strategy": "invalid_strategy"}
-
-        response = await authenticated_client.put(
-            "/api/ai/providers/strategy", json=strategy_update
-        )
-        assert response.status_code == 422  # Validation error
-
-    @pytest.mark.integration
-    async def test_get_available_models(self, authenticated_client: httpx.AsyncClient):
-        """Test getting available models from all providers"""
-        response = await authenticated_client.get("/api/ai/providers/models")
+    def test_get_available_models(self, admin_client):
+        response = admin_client.get("/api/providers/models")
         assert response.status_code == 200
 
         data = response.json()
-        assert "models_by_provider" in data
-        assert "total_models" in data
-
         models = data["models_by_provider"]
-        assert "mock" in models
+        assert data["total_models"] == sum(len(m) for m in models.values())
+        assert models["mock"]
+        for model in models["mock"]:
+            for field in (
+                "name",
+                "display_name",
+                "max_tokens",
+                "cost_per_1k_input_tokens",
+                "cost_per_1k_output_tokens",
+                "capabilities",
+                "context_window",
+            ):
+                assert field in model
 
-        # Check mock provider models
-        mock_models = models["mock"]
-        assert len(mock_models) > 0
+    def test_reset_provider_limits(self, admin_client):
+        manager = get_ai_provider_manager()
+        manager.usage_trackers["mock"].requests_per_minute.append(time.time())
 
-        for model in mock_models:
-            assert "name" in model
-            assert "display_name" in model
-            assert "max_tokens" in model
-            assert "cost_per_1k_input_tokens" in model
-            assert "cost_per_1k_output_tokens" in model
-            assert "capabilities" in model
-            assert "context_window" in model
+        response = admin_client.post("/api/providers/mock/reset-limits")
+        assert response.status_code == 200
+        assert response.json()["provider"] == "mock"
+        assert len(manager.usage_trackers["mock"].requests_per_minute) == 0
 
-    @pytest.mark.integration
-    async def test_reset_provider_limits(self, authenticated_client: httpx.AsyncClient):
-        """Test resetting provider limits"""
-        response = await authenticated_client.post(
-            "/api/ai/providers/mock/reset-limits"
-        )
+    def test_reset_nonexistent_provider_limits(self, admin_client):
+        assert admin_client.post("/api/providers/nonexistent/reset-limits").status_code == 404
+
+    def test_get_provider_statistics(self, admin_client):
+        response = admin_client.get("/api/providers/statistics")
         assert response.status_code == 200
 
         data = response.json()
-        assert "provider" in data
-        assert "message" in data
-        assert data["provider"] == "mock"
-
-    @pytest.mark.integration
-    async def test_reset_nonexistent_provider_limits(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test resetting limits for non-existent provider"""
-        response = await authenticated_client.post(
-            "/api/ai/providers/nonexistent/reset-limits"
-        )
-        assert response.status_code == 404
-
-    @pytest.mark.integration
-    async def test_get_provider_statistics(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test getting detailed provider statistics"""
-        response = await authenticated_client.get("/api/ai/providers/statistics")
-        assert response.status_code == 200
-
-        data = response.json()
-        assert "overview" in data
-        assert "usage_summary" in data
-        assert "provider_details" in data
-
         overview = data["overview"]
-        assert "total_providers" in overview
+        assert overview["total_providers"] >= 1
         assert "available_providers" in overview
         assert "current_strategy" in overview
+        assert "usage_summary" in data
 
-        # Check provider details structure
-        provider_details = data["provider_details"]
-        assert "mock" in provider_details
-
-        mock_details = provider_details["mock"]
-        required_fields = [
+        mock_details = data["provider_details"]["mock"]
+        for field in [
             "type",
             "status",
             "is_available",
@@ -316,136 +217,85 @@ class TestAIProviderAPIEndpoints:
             "success_rate",
             "available_models",
             "default_model",
-        ]
-
-        for field in required_fields:
+        ]:
             assert field in mock_details
 
 
-class TestAIProviderAPIAuthentication:
-    """Test API authentication for AI provider endpoints"""
-
-    @pytest.mark.integration
-    async def test_unauthenticated_access(self, async_client: httpx.AsyncClient):
-        """Test that unauthenticated requests are rejected"""
-        endpoints = [
-            "/api/ai/providers/status",
-            "/api/ai/providers/costs",
-            "/api/ai/providers/models",
-            "/api/ai/providers/statistics",
-        ]
-
-        for endpoint in endpoints:
-            response = await async_client.get(endpoint)
-            assert response.status_code == 401
-
-    @pytest.mark.integration
-    async def test_unauthenticated_post_requests(self, async_client: httpx.AsyncClient):
-        """Test that unauthenticated POST requests are rejected"""
-        endpoints = [
-            ("/api/ai/providers/test", {"provider": "mock"}),
-            ("/api/ai/providers/mock/validate", {}),
-            ("/api/ai/providers/validate-all", {}),
-            ("/api/ai/providers/mock/reset-limits", {}),
-        ]
-
-        for endpoint, data in endpoints:
-            response = await async_client.post(endpoint, json=data)
-            assert response.status_code == 401
-
-    @pytest.mark.integration
-    async def test_unauthenticated_put_requests(self, async_client: httpx.AsyncClient):
-        """Test that unauthenticated PUT requests are rejected"""
-        endpoints = [
-            ("/api/ai/providers/mock/config", {"enabled": True}),
-            ("/api/ai/providers/strategy", {"strategy": "round_robin"}),
-        ]
-
-        for endpoint, data in endpoints:
-            response = await async_client.put(endpoint, json=data)
-            assert response.status_code == 401
-
-
+@pytest.mark.unit
 class TestAIProviderAPIErrorHandling:
-    """Test error handling in AI provider API endpoints"""
+    """Request validation"""
 
-    @pytest.mark.integration
-    async def test_malformed_json_requests(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test handling of malformed JSON in requests"""
-        # Test with invalid JSON for provider test
-        response = await authenticated_client.post(
-            "/api/ai/providers/test",
-            data="invalid json",
-            headers={"Content-Type": "application/json"},
+    def test_malformed_json_requests(self, admin_client):
+        response = admin_client.post(
+            "/api/providers/test", content="invalid json", headers={"Content-Type": "application/json"}
         )
         assert response.status_code == 422
 
-    @pytest.mark.integration
-    async def test_missing_required_fields(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test handling of missing required fields"""
-        # Test provider test without required provider field
-        response = await authenticated_client.post(
-            "/api/ai/providers/test",
-            json={"test_prompt": "test"},  # Missing provider field
-        )
+    def test_missing_required_fields(self, admin_client):
+        response = admin_client.post("/api/providers/test", json={"test_prompt": "test"})
         assert response.status_code == 422
 
-    @pytest.mark.integration
-    async def test_invalid_field_values(self, authenticated_client: httpx.AsyncClient):
-        """Test handling of invalid field values"""
-        # Test with invalid priority value
-        response = await authenticated_client.put(
-            "/api/ai/providers/mock/config",
-            json={"priority": "invalid"},  # Should be integer
-        )
+    def test_invalid_field_values(self, admin_client):
+        response = admin_client.put("/api/providers/mock/config", json={"priority": "invalid"})
         assert response.status_code == 422
 
 
-class TestAIProviderAPIPerformance:
-    """Performance tests for AI provider API endpoints"""
+@pytest.mark.unit
+class TestAIProviderAPIAuthorization:
+    """Members are refused operator endpoints; the model catalogue is open to them"""
 
-    @pytest.mark.integration
-    async def test_concurrent_api_requests(
-        self, authenticated_client: httpx.AsyncClient
-    ):
-        """Test handling of concurrent API requests"""
-        # Create multiple concurrent requests
-        tasks = []
-        for _ in range(5):
-            task = authenticated_client.get("/api/ai/providers/status")
-            tasks.append(task)
+    def test_member_gets_403_on_operator_endpoints(self, unit_client):
+        for endpoint in ADMIN_GET_ENDPOINTS:
+            assert unit_client.get(endpoint).status_code == 403, endpoint
+        for endpoint, body in ADMIN_POST_ENDPOINTS:
+            assert unit_client.post(endpoint, json=body).status_code == 403, endpoint
+        for endpoint, body in ADMIN_PUT_ENDPOINTS:
+            assert unit_client.put(endpoint, json=body).status_code == 403, endpoint
 
-        # Wait for all to complete
-        responses = await asyncio.gather(*tasks)
+    def test_member_can_list_models(self, unit_client):
+        assert unit_client.get("/api/providers/models").status_code == 200
 
-        # Verify all succeeded
-        for response in responses:
-            assert response.status_code == 200
 
-    @pytest.mark.integration
+@pytest.mark.integration
+class TestAIProviderAPIAuthentication:
+    """Access control on the running stack"""
+
+    async def test_unauthenticated_access(self, api_client: httpx.AsyncClient):
+        for endpoint in ADMIN_GET_ENDPOINTS + ["/api/providers/models"]:
+            response = await api_client.get(endpoint)
+            assert response.status_code == 401, endpoint
+
+    async def test_unauthenticated_post_requests(self, api_client: httpx.AsyncClient):
+        for endpoint, data in ADMIN_POST_ENDPOINTS:
+            response = await api_client.post(endpoint, json=data)
+            assert response.status_code == 401, endpoint
+
+    async def test_unauthenticated_put_requests(self, api_client: httpx.AsyncClient):
+        for endpoint, data in ADMIN_PUT_ENDPOINTS:
+            response = await api_client.put(endpoint, json=data)
+            assert response.status_code == 401, endpoint
+
+    async def test_regular_user_is_not_platform_admin(self, authenticated_client: httpx.AsyncClient):
+        for endpoint in ADMIN_GET_ENDPOINTS:
+            assert (await authenticated_client.get(endpoint)).status_code == 403, endpoint
+        for endpoint, data in ADMIN_POST_ENDPOINTS:
+            assert (await authenticated_client.post(endpoint, json=data)).status_code == 403, endpoint
+        for endpoint, data in ADMIN_PUT_ENDPOINTS:
+            assert (await authenticated_client.put(endpoint, json=data)).status_code == 403, endpoint
+
+    async def test_models_available_to_members(self, authenticated_client: httpx.AsyncClient):
+        response = await authenticated_client.get("/api/providers/models")
+        assert response.status_code == 200
+        assert response.json()["models_by_provider"]["mock"]
+
+    async def test_concurrent_api_requests(self, authenticated_client: httpx.AsyncClient):
+        responses = await asyncio.gather(
+            *[authenticated_client.get("/api/providers/models") for _ in range(5)]
+        )
+        assert [r.status_code for r in responses] == [200] * 5
+
     async def test_api_response_times(self, authenticated_client: httpx.AsyncClient):
-        """Test API response times are reasonable"""
-        import time
-
-        endpoints = [
-            "/api/ai/providers/status",
-            "/api/ai/providers/costs",
-            "/api/ai/providers/models",
-            "/api/ai/providers/statistics",
-        ]
-
-        for endpoint in endpoints:
-            start_time = time.time()
-            response = await authenticated_client.get(endpoint)
-            end_time = time.time()
-
-            assert response.status_code == 200
-            assert (end_time - start_time) < 5.0  # Should respond within 5 seconds
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+        start_time = time.time()
+        response = await authenticated_client.get("/api/providers/models")
+        assert response.status_code == 200
+        assert time.time() - start_time < 5.0
