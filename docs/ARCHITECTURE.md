@@ -71,7 +71,7 @@ Schema changes go through Alembic only (`backend/alembic/versions/`). The API ne
 ## Multi-tenancy
 
 1. **Application layer (enforced today).** The workspace comes from the signed access token, never from the request body. Every read and write filters on it, and cross-tenant lookups return 404. The WebSocket handshake rejects a `workspace_id` that doesn't match the token.
-2. **Database layer (policies in place, enforcement pending).** Every tenant table has an RLS policy on `current_setting('app.workspace_id', true)`. Request handlers set it with `set_config(..., true)` (transaction-scoped), and workers set it session-level on a dedicated connection. Because the app currently connects as the table owner, Postgres doesn't apply the policies. Switching to a non-owner role with `FORCE ROW LEVEL SECURITY` would turn them on without code changes to the query layer.
+2. **Database layer (policies in place, enforcement pending).** Every tenant table has an RLS policy on `current_setting('app.workspace_id', true)`. The document routes set it with `set_config(..., true)` (transaction-scoped), and workers set it session-level on a dedicated connection. Setting it in every request handler is part of the enforcement work. Because the app currently connects as the table owner, Postgres doesn't apply the policies. Switching to a non-owner role with `FORCE ROW LEVEL SECURITY` would turn them on without code changes to the query layer.
 
 ## Security
 
