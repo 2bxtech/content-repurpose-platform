@@ -92,7 +92,8 @@ Schema changes go through Alembic only (`backend/alembic/versions/`). The API ne
 ## Security
 
 - **Auth.** Access token 15 min, refresh token 7 days. Refresh rotates and blacklists the old token, and sessions live in Redis and can be revoked individually or all at once.
-- **Operator endpoints.** Global provider config, cost data and socket stats require a user ID listed in `PLATFORM_ADMIN_USER_IDS`. Workspace roles don't grant this, and email addresses aren't used because registration doesn't verify ownership.
+- **Email verification.** The link carries a JWT with its own `type` (it can't be used as an access token, and vice versa), expires after 48 hours, and only verifies while the account still has that address. When `REQUIRE_VERIFIED_EMAIL` is on (the default in production), unverified users get 403 on anything that calls the AI. In production, the link is never written to logs, even without SMTP.
+- **Operator endpoints.** Global provider config, cost data and socket stats require a user ID listed in `PLATFORM_ADMIN_USER_IDS`. Workspace roles don't grant this, and user IDs are used rather than email addresses because IDs can't be claimed by registering an address first.
 - **Rate limits.** Stored in Redis, per client IP, in three classes: auth (`5/15m`), transformation writes (`30/1h`), everything else (`100/1m`). Only honour `X-Forwarded-For` when `TRUST_PROXY_HEADERS=true`.
 - **Uploads.** Size limit, an extension allowlist, executable-signature rejection, and content sniffing with libmagic (installed in the image): a file whose bytes don't match its extension, such as a script renamed to `.pdf`, is rejected with 400. (Sniffing is disabled when running the API natively on Windows; see `file_processor.py`.)
 - **URL ingestion.** The host is resolved and private, loopback and link-local addresses are rejected; redirects are not followed and timeouts are short. (A DNS answer could still change between check and fetch; pinning the resolved IP for the request would close that gap.)
@@ -110,6 +111,7 @@ Everything comes from environment variables (`backend/app/core/config.py`, docum
 | `TRANSFORMATION_EXECUTION` | `celery` (default) or `inline` for a worker-less local setup |
 | `AI_WORKSPACE_MONTHLY_REQUESTS`, `AI_WORKSPACE_MONTHLY_BUDGET_USD` | Default monthly AI limits; a workspace's `ai_requests_per_month` / `ai_monthly_budget_usd` settings override them |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (+ standard `OTEL_*`) | Turns tracing on and sets where spans go |
+| `REQUIRE_VERIFIED_EMAIL`, `SMTP_*`, `FRONTEND_URL` | Email verification: whether it gates AI work (default: production only), the mail server, and the base URL for links |
 | `PLATFORM_ADMIN_USER_IDS` | Comma-separated user IDs allowed to use operator endpoints |
 | `CORS_ORIGINS`, `CORS_ORIGIN_REGEX` | Allowed browser origins (regex for preview deployments) |
 | `RATE_LIMIT_*` | Rate-limit budgets |

@@ -18,6 +18,8 @@ import ProtectedRoute from './components/ProtectedRoute';
 // Pages
 import Login from './pages/Login';
 import Register from './pages/Register';
+import VerifyEmail from './pages/VerifyEmail';
+import VerifyEmailBanner from './components/VerifyEmailBanner';
 import HomePage from './pages/HomePage';
 import Dashboard from './pages/Dashboard';
 import TextInputPage from './pages/TextInputPage';
@@ -52,10 +54,12 @@ const App: React.FC = () => {
                 <Router>
                   <NavBar />
                   <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+                    <VerifyEmailBanner />
                     <Routes>
                     {/* Public routes */}
                     <Route path="/login" element={<Login />} />
                     <Route path="/register" element={<Register />} />
+                    <Route path="/verify-email" element={<VerifyEmail />} />
                     
                     {/* Protected routes */}
                     <Route

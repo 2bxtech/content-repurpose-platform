@@ -15,6 +15,8 @@ _AUTH_PATHS = {
     "/api/auth/register",
     "/api/auth/refresh",
     "/api/auth/change-password",
+    "/api/auth/verify-email",
+    "/api/auth/resend-verification",
 }
 _MESSAGES = {
     "auth": "Too many authentication attempts. Please try again later.",

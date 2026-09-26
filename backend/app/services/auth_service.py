@@ -114,6 +114,23 @@ class AuthService:
         )
         return encoded_jwt
 
+    def create_email_verification_token(self, user_id: uuid.UUID, email: str) -> str:
+        """Single-purpose token for the verification link (its own `type`, so it
+        can't be used as an access token, and vice versa)."""
+        now = datetime.utcnow()
+        return jwt.encode(
+            {
+                "sub": str(user_id),
+                "email": email,
+                "type": "email_verify",
+                "iat": now,
+                "exp": now + timedelta(hours=settings.EMAIL_VERIFICATION_EXPIRE_HOURS),
+                "jti": str(uuid.uuid4()),
+            },
+            settings.SECRET_KEY,
+            algorithm=settings.JWT_ALGORITHM,
+        )
+
     def verify_token(
         self, token: str, token_type: str = "access"
     ) -> Optional[TokenData]:
@@ -121,9 +138,9 @@ class AuthService:
         try:
             # Choose the correct secret based on token type
             secret_key = (
-                settings.SECRET_KEY
-                if token_type == "access"
-                else settings.REFRESH_SECRET_KEY
+                settings.REFRESH_SECRET_KEY
+                if token_type == "refresh"
+                else settings.SECRET_KEY
             )
 
             payload = jwt.decode(token, secret_key, algorithms=[settings.JWT_ALGORITHM])
@@ -160,9 +177,9 @@ class AuthService:
         """Add a token to the blacklist"""
         try:
             secret_key = (
-                settings.SECRET_KEY
-                if token_type == "access"
-                else settings.REFRESH_SECRET_KEY
+                settings.REFRESH_SECRET_KEY
+                if token_type == "refresh"
+                else settings.SECRET_KEY
             )
             payload = jwt.decode(token, secret_key, algorithms=[settings.JWT_ALGORITHM])
 
