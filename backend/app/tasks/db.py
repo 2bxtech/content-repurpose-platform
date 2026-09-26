@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _engine: Optional[AsyncEngine] = None
+# Set when the startup RLS check fails in production. Celery swallows exceptions
+# raised from signal handlers, so the block is enforced here, on every session.
+_rls_block_reason: Optional[str] = None
 
 
 def run_async(coro: Awaitable[T]) -> T:
@@ -66,6 +69,8 @@ async def task_session(
     every transaction (app.core.tenancy), so it survives the task's commits.
     Pass bypass_rls only for maintenance that spans workspaces.
     """
+    if _rls_block_reason:
+        raise RuntimeError(_rls_block_reason)
     async with _get_engine().connect() as conn:
         async with AsyncSession(bind=conn, expire_on_commit=False) as session:
             if workspace_id is not None:
@@ -83,9 +88,12 @@ def _check_rls_on_start(**_kwargs) -> None:
         async with task_session() as session:
             await check_rls_enforced(session, "worker")
 
+    global _rls_block_reason
     try:
         run_async(check())
-    except RuntimeError:
-        raise
+    except RuntimeError as e:
+        # Raising here wouldn't stop the worker; refuse every task instead.
+        _rls_block_reason = str(e)
+        logger.critical("%s; this worker will refuse all tasks", e)
     except Exception as e:  # DB not reachable yet: tasks will fail loudly on their own
         logger.warning("Could not verify row-level security at worker start: %s", e)
