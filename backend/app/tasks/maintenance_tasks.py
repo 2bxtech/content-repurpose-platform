@@ -26,7 +26,8 @@ def fail_stuck_transformations() -> int:
 
 async def _fail_stuck() -> int:
     cutoff = datetime.utcnow() - STUCK_AFTER
-    async with task_session() as db:
+    # Spans every workspace by design.
+    async with task_session(bypass_rls=True) as db:
         result = await db.execute(
             update(TransformationDB)
             .where(

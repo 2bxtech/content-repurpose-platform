@@ -150,6 +150,9 @@ class Settings(BaseSettings):
     # Sync database URL for Alembic migrations
     DATABASE_URL_SYNC: Optional[str] = Field(default=None)
     SQL_ECHO: bool = False  # log every SQL statement (noisy; for debugging only)
+    # Unprivileged role the app and workers query as, so row-level security applies
+    # (owners and superusers skip it). Created by migrations; "" disables the switch.
+    DB_APP_ROLE: str = "content_repurpose_app"
 
     def get_database_url(self, async_driver: bool = True) -> str:
         """Construct database URL if not provided.

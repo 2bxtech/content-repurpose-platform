@@ -19,7 +19,8 @@ from app.api.routes.transformations import router as transformations_router
 from app.api.routes.websockets import router as websockets_router
 from app.api.routes.workspaces import router as workspaces_router
 from app.core.config import settings
-from app.core.database import close_db, database_health_check
+from app.core.database import _initialize_engine, close_db, database_health_check
+from app.core.tenancy import check_rls_enforced, rls_status
 from app.core.websocket_manager import manager as websocket_manager
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
@@ -61,6 +62,10 @@ async def lifespan(app: FastAPI):
     # the app never creates tables itself, so RLS policies can't be skipped by accident.
     db = await database_health_check()
     logger.info("Database: %s", db["status"])
+    if db["status"] == "healthy":
+        # Refuses to start in production if Postgres wouldn't apply row-level security.
+        rls = await _rls_status(check=True)
+        logger.info("Row-level security: %s (as %s)", "enforced" if rls["enforced"] else "NOT enforced", rls["role"])
     logger.info("Redis: %s", "connected" if await redis_service.health_check() else "unavailable")
     await websocket_manager.start_redis_listener()
     yield
@@ -130,6 +135,14 @@ def _origin_allowed(origin: str) -> bool:
     )
 
 
+async def _rls_status(check: bool = False) -> dict:
+    _, session_factory = _initialize_engine()
+    async with session_factory() as session:
+        if check:
+            return await check_rls_enforced(session, "api")
+        return await rls_status(session)
+
+
 @app.get("/", include_in_schema=False)
 async def root():
     return {"service": "content-repurpose-api", "version": API_VERSION, "docs": "/docs"}
@@ -146,6 +159,10 @@ async def health():
     checks["database"] = {"status": db["status"]}
     if db["status"] != "healthy":
         overall = "degraded"
+    else:
+        checks["database"]["row_level_security"] = (
+            "enforced" if (await _rls_status())["enforced"] else "not_enforced"
+        )
 
     checks["redis"] = {"status": "healthy" if await redis_service.health_check() else "unavailable"}
 

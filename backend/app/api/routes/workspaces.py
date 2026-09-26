@@ -18,6 +18,7 @@ from app.db.models.workspace import Workspace as WorkspaceDB
 from app.db.models.user import User as UserDB, UserRole
 from app.api.routes.auth import get_current_active_user
 from app.core.database import get_db_session
+from app.core.tenancy import rls_bypass
 from app.services.workspace_service import workspace_service
 
 router = APIRouter()
@@ -114,53 +115,55 @@ async def create_workspace(
     db: AsyncSession = Depends(get_db_session),
 ):
     """Create a new workspace"""
+    # Creating a tenant spans tenants: slugs are global, and the new workspace and
+    # the user moving into it are outside the caller's current workspace.
+    async with rls_bypass(db):
+        # Check if slug is already taken
+        stmt = select(WorkspaceDB).where(
+            and_(WorkspaceDB.slug == workspace_data.slug, WorkspaceDB.deleted_at.is_(None))
+        )
+        result = await db.execute(stmt)
+        existing_workspace = result.scalar_one_or_none()
 
-    # Check if slug is already taken
-    stmt = select(WorkspaceDB).where(
-        and_(WorkspaceDB.slug == workspace_data.slug, WorkspaceDB.deleted_at.is_(None))
-    )
-    result = await db.execute(stmt)
-    existing_workspace = result.scalar_one_or_none()
+        if existing_workspace:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace slug '{workspace_data.slug}' is already taken",
+            )
 
-    if existing_workspace:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Workspace slug '{workspace_data.slug}' is already taken",
+        # Create workspace
+        workspace = WorkspaceDB(
+            name=workspace_data.name,
+            slug=workspace_data.slug,
+            description=workspace_data.description,
+            plan=workspace_data.plan.value,
+            settings={
+                "max_users": 10,
+                "max_documents": 100,
+                "max_storage_mb": 1000,
+                "ai_requests_per_month": 1000,
+                "features_enabled": ["basic_transformations"],
+            },
+            is_active=True,
+            created_by=current_user["id"],
         )
 
-    # Create workspace
-    workspace = WorkspaceDB(
-        name=workspace_data.name,
-        slug=workspace_data.slug,
-        description=workspace_data.description,
-        plan=workspace_data.plan.value,
-        settings={
-            "max_users": 10,
-            "max_documents": 100,
-            "max_storage_mb": 1000,
-            "ai_requests_per_month": 1000,
-            "features_enabled": ["basic_transformations"],
-        },
-        is_active=True,
-        created_by=current_user["id"],
-    )
+        db.add(workspace)
+        await db.flush()  # Get the workspace ID
 
-    db.add(workspace)
-    await db.flush()  # Get the workspace ID
+        # Add current user as workspace owner
+        user_id = current_user["id"]
+        stmt = select(UserDB).where(UserDB.id == user_id)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
 
-    # Add current user as workspace owner
-    user_id = current_user["id"]
-    stmt = select(UserDB).where(UserDB.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+        if user:
+            # Update user's workspace and role
+            user.workspace_id = workspace.id
+            user.role = UserRole.OWNER
 
-    if user:
-        # Update user's workspace and role
-        user.workspace_id = workspace.id
-        user.role = UserRole.OWNER
-
-    await db.commit()
-    await db.refresh(workspace)
+        await db.commit()
+        await db.refresh(workspace)
 
     logger.info(f"Workspace created: {workspace.slug} by user {current_user['email']}")
 

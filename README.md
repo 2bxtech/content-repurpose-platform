@@ -37,10 +37,11 @@ The deeper write-up, covering request lifecycle, data model and failure handling
 
 ## Key design decisions
 
-- **Tenant isolation: app-level workspace filters, with Postgres RLS as a second layer.**
+- **Tenant isolation enforced twice: app-level workspace filters, and Postgres row-level security underneath.**
   - Every query is scoped to the authenticated user's workspace (looked up from the token's user ID, never taken from the request body). Integration tests assert that one tenant can't read another's documents, transformations or sockets.
-  - RLS policies on every tenant table add a database-level backstop that doesn't depend on every query being written correctly.
-  - *Current limitation:* the app connects as the table owner, so Postgres doesn't enforce those policies yet. Enforcing them means a non-owner app role with `FORCE ROW LEVEL SECURITY`, setting the workspace context in every handler (today only the document routes and the transformation worker do), and a bypass role for login and the stuck-job sweeper.
+  - Postgres enforces the same boundary itself, so a query with a forgotten `WHERE` still can't leak rows. The app queries as an unprivileged role (owners and superusers skip RLS), and the workspace is re-applied at the start of every transaction, so it survives mid-request commits.
+  - The few cross-tenant operations (login by email, registration, creating a workspace, the stuck-job sweeper) opt out explicitly with `rls_bypass`, so every exception is greppable.
+  - A test connects as the app role and checks, in the database itself, that another workspace's rows can't be read, updated or claimed.
 - **Celery for AI calls.**
   - Generation takes seconds to minutes, costs money, and fails in provider-specific ways. Running it in the request would tie up API workers and lose work on timeouts.
   - The queue gives retries at the provider layer and an at-most-once billed call (the atomic claim). A beat sweeper fails jobs stuck past a deadline, so clients never poll forever.
@@ -97,7 +98,6 @@ The integration suite drives the real stack. It checks that a transformation cre
 
 ## What I'd do next
 
-- **Enforce RLS in Postgres:** connect as a non-owner role and add `FORCE ROW LEVEL SECURITY`, so the policies become enforced isolation.
 - **Verify email addresses before they unlock anything sensitive.**
 - **Per-workspace AI budgets on top of the existing per-call cost tracking.**
 - **OpenTelemetry traces across API, queue and worker.**

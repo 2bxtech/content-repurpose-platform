@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, text
+from sqlalchemy import select, func, and_
 from typing import Dict, Any, Optional
 import uuid
 from datetime import datetime, timedelta
@@ -16,84 +16,59 @@ logger = logging.getLogger(__name__)
 class WorkspaceService:
     """Service for workspace-related operations"""
 
-    async def set_workspace_context(self, db: AsyncSession, workspace_id: uuid.UUID):
-        """Set the PostgreSQL session variable for RLS (transaction-scoped)"""
-        try:
-            # set_config(..., is_local => true) == SET LOCAL, but bind-parameterised.
-            await db.execute(
-                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": str(workspace_id)}
-            )
-            logger.debug(f"Set workspace context: {workspace_id}")
-        except Exception as e:
-            logger.error(f"Failed to set workspace context: {e}")
-            raise
-
-    async def clear_workspace_context(self, db: AsyncSession):
-        """Clear the PostgreSQL session variable for RLS"""
-        try:
-            await db.execute(text("RESET app.workspace_id"))
-            logger.debug("Cleared workspace context")
-        except Exception as e:
-            logger.warning(f"Failed to clear workspace context: {e}")
-
     async def get_workspace_stats(
         self, db: AsyncSession, workspace_id: uuid.UUID
     ) -> Dict[str, Any]:
         """Get basic workspace statistics"""
 
-        # Set workspace context for RLS
-        await self.set_workspace_context(db, workspace_id)
 
-        try:
-            # Count users
-            user_count_stmt = select(func.count(User.id)).where(
-                and_(
-                    User.workspace_id == workspace_id,
-                    User.is_active,
-                    User.deleted_at.is_(None),
-                )
+        # Count users
+        user_count_stmt = select(func.count(User.id)).where(
+            and_(
+                User.workspace_id == workspace_id,
+                User.is_active,
+                User.deleted_at.is_(None),
             )
-            user_count_result = await db.execute(user_count_stmt)
-            user_count = user_count_result.scalar() or 0
+        )
+        user_count_result = await db.execute(user_count_stmt)
+        user_count = user_count_result.scalar() or 0
 
-            # Count documents
-            doc_count_stmt = select(func.count(Document.id)).where(
-                and_(
-                    Document.workspace_id == workspace_id, Document.deleted_at.is_(None)
-                )
+        # Count documents
+        doc_count_stmt = select(func.count(Document.id)).where(
+            and_(
+                Document.workspace_id == workspace_id, Document.deleted_at.is_(None)
             )
-            doc_count_result = await db.execute(doc_count_stmt)
-            document_count = doc_count_result.scalar() or 0
+        )
+        doc_count_result = await db.execute(doc_count_stmt)
+        document_count = doc_count_result.scalar() or 0
 
-            # Calculate storage used (sum of file sizes)
-            storage_stmt = select(func.coalesce(func.sum(Document.file_size), 0)).where(
-                and_(
-                    Document.workspace_id == workspace_id, Document.deleted_at.is_(None)
-                )
+        # Calculate storage used (sum of file sizes)
+        storage_stmt = select(func.coalesce(func.sum(Document.file_size), 0)).where(
+            and_(
+                Document.workspace_id == workspace_id, Document.deleted_at.is_(None)
             )
-            storage_result = await db.execute(storage_stmt)
-            storage_bytes = storage_result.scalar() or 0
-            storage_mb = storage_bytes / (1024 * 1024)  # Convert to MB
+        )
+        storage_result = await db.execute(storage_stmt)
+        storage_bytes = storage_result.scalar() or 0
+        storage_mb = storage_bytes / (1024 * 1024)  # Convert to MB
 
-            # Count transformations
-            transform_count_stmt = select(func.count(Transformation.id)).where(
-                and_(
-                    Transformation.workspace_id == workspace_id,
-                    Transformation.deleted_at.is_(None),
-                )
+        # Count transformations
+        transform_count_stmt = select(func.count(Transformation.id)).where(
+            and_(
+                Transformation.workspace_id == workspace_id,
+                Transformation.deleted_at.is_(None),
             )
-            transform_count_result = await db.execute(transform_count_stmt)
-            transformation_count = transform_count_result.scalar() or 0
+        )
+        transform_count_result = await db.execute(transform_count_stmt)
+        transformation_count = transform_count_result.scalar() or 0
 
-            return {
-                "user_count": user_count,
-                "document_count": document_count,
-                "storage_used_mb": round(storage_mb, 2),
-                "transformation_count": transformation_count,
-            }
+        return {
+            "user_count": user_count,
+            "document_count": document_count,
+            "storage_used_mb": round(storage_mb, 2),
+            "transformation_count": transformation_count,
+        }
 
-        finally:
-            await self.clear_workspace_context(db)
 
     async def get_workspace_usage(
         self, db: AsyncSession, workspace_id: uuid.UUID
@@ -116,21 +91,17 @@ class WorkspaceService:
             day=1, hour=0, minute=0, second=0, microsecond=0
         )
 
-        await self.set_workspace_context(db, workspace_id)
 
-        try:
-            monthly_requests_stmt = select(func.count(Transformation.id)).where(
-                and_(
-                    Transformation.workspace_id == workspace_id,
-                    Transformation.created_at >= current_month,
-                    Transformation.deleted_at.is_(None),
-                )
+        monthly_requests_stmt = select(func.count(Transformation.id)).where(
+            and_(
+                Transformation.workspace_id == workspace_id,
+                Transformation.created_at >= current_month,
+                Transformation.deleted_at.is_(None),
             )
-            monthly_requests_result = await db.execute(monthly_requests_stmt)
-            monthly_ai_requests = monthly_requests_result.scalar() or 0
+        )
+        monthly_requests_result = await db.execute(monthly_requests_stmt)
+        monthly_ai_requests = monthly_requests_result.scalar() or 0
 
-        finally:
-            await self.clear_workspace_context(db)
 
         # Extract limits from workspace settings
         settings = workspace.settings or {}
@@ -177,51 +148,47 @@ class WorkspaceService:
 
         start_date = datetime.now() - timedelta(days=days)
 
-        await self.set_workspace_context(db, workspace_id)
 
-        try:
-            # Documents created in the last N days
-            docs_created_stmt = select(func.count(Document.id)).where(
-                and_(
-                    Document.workspace_id == workspace_id,
-                    Document.created_at >= start_date,
-                    Document.deleted_at.is_(None),
-                )
+        # Documents created in the last N days
+        docs_created_stmt = select(func.count(Document.id)).where(
+            and_(
+                Document.workspace_id == workspace_id,
+                Document.created_at >= start_date,
+                Document.deleted_at.is_(None),
             )
-            docs_created_result = await db.execute(docs_created_stmt)
-            docs_created = docs_created_result.scalar() or 0
+        )
+        docs_created_result = await db.execute(docs_created_stmt)
+        docs_created = docs_created_result.scalar() or 0
 
-            # Transformations created in the last N days
-            transforms_created_stmt = select(func.count(Transformation.id)).where(
-                and_(
-                    Transformation.workspace_id == workspace_id,
-                    Transformation.created_at >= start_date,
-                    Transformation.deleted_at.is_(None),
-                )
+        # Transformations created in the last N days
+        transforms_created_stmt = select(func.count(Transformation.id)).where(
+            and_(
+                Transformation.workspace_id == workspace_id,
+                Transformation.created_at >= start_date,
+                Transformation.deleted_at.is_(None),
             )
-            transforms_created_result = await db.execute(transforms_created_stmt)
-            transforms_created = transforms_created_result.scalar() or 0
+        )
+        transforms_created_result = await db.execute(transforms_created_stmt)
+        transforms_created = transforms_created_result.scalar() or 0
 
-            # Active users (users who performed any action in the last N days)
-            # This is simplified - in production you'd track user activity
-            active_users_stmt = select(func.count(func.distinct(User.id))).where(
-                and_(
-                    User.workspace_id == workspace_id,
-                    User.is_active,
-                    User.deleted_at.is_(None),
-                )
+        # Active users (users who performed any action in the last N days)
+        # This is simplified - in production you'd track user activity
+        active_users_stmt = select(func.count(func.distinct(User.id))).where(
+            and_(
+                User.workspace_id == workspace_id,
+                User.is_active,
+                User.deleted_at.is_(None),
             )
-            active_users_result = await db.execute(active_users_stmt)
-            active_users = active_users_result.scalar() or 0
+        )
+        active_users_result = await db.execute(active_users_stmt)
+        active_users = active_users_result.scalar() or 0
 
-            return {
-                f"documents_created_last_{days}_days": docs_created,
-                f"transformations_created_last_{days}_days": transforms_created,
-                f"active_users_last_{days}_days": active_users,
-            }
+        return {
+            f"documents_created_last_{days}_days": docs_created,
+            f"transformations_created_last_{days}_days": transforms_created,
+            f"active_users_last_{days}_days": active_users,
+        }
 
-        finally:
-            await self.clear_workspace_context(db)
 
     async def check_workspace_limits(
         self,

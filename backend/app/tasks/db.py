@@ -8,17 +8,20 @@ loop after every task would break them from the second task on.
 """
 
 import asyncio
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Optional, TypeVar
 
-from sqlalchemy import text
+from celery.signals import worker_process_init
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.tenancy import check_rls_enforced, enforce_app_role
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _engine: Optional[AsyncEngine] = None
@@ -49,23 +52,40 @@ def _get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         _engine = create_async_engine(settings.get_database_url(), poolclass=NullPool)
+        enforce_app_role(_engine.sync_engine)
     return _engine
 
 
 @asynccontextmanager
-async def task_session(workspace_id: Optional[uuid.UUID] = None) -> AsyncIterator[AsyncSession]:
-    """Yield a session pinned to a single connection.
+async def task_session(
+    workspace_id: Optional[uuid.UUID] = None, *, bypass_rls: bool = False
+) -> AsyncIterator[AsyncSession]:
+    """Yield a session pinned to one connection, running as the app role.
 
-    When workspace_id is given the connection is scoped for RLS with a
-    session-level setting, which survives the several commits a task makes
-    (SET LOCAL would reset at the first one).
+    RLS context comes from the session's info and is applied at the start of
+    every transaction (app.core.tenancy), so it survives the task's commits.
+    Pass bypass_rls only for maintenance that spans workspaces.
     """
     async with _get_engine().connect() as conn:
-        if workspace_id is not None:
-            await conn.execute(
-                text("SELECT set_config('app.workspace_id', :ws, false)"),
-                {"ws": str(workspace_id)},
-            )
-            await conn.commit()
         async with AsyncSession(bind=conn, expire_on_commit=False) as session:
+            if workspace_id is not None:
+                session.sync_session.info["workspace_id"] = str(workspace_id)
+            if bypass_rls:
+                session.sync_session.info["rls_bypass"] = True
             yield session
+
+
+@worker_process_init.connect
+def _check_rls_on_start(**_kwargs) -> None:
+    """Refuse to run tasks in production if Postgres wouldn't apply row-level security."""
+
+    async def check():
+        async with task_session() as session:
+            await check_rls_enforced(session, "worker")
+
+    try:
+        run_async(check())
+    except RuntimeError:
+        raise
+    except Exception as e:  # DB not reachable yet: tasks will fail loudly on their own
+        logger.warning("Could not verify row-level security at worker start: %s", e)
