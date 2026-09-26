@@ -14,9 +14,11 @@ import time
 from datetime import datetime
 from typing import Optional
 
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.telemetry import span
 from app.db.models.transformation import Transformation as TransformationDB
 from app.models.transformation import TransformationStatus
 from app.services.ai_providers import AIProviderError, get_ai_provider_manager
@@ -36,6 +38,37 @@ async def execute_transformation(
 ) -> TransformationDB:
     """Call the provider manager (which handles failover and retries) and persist
     COMPLETED with usage/cost, or FAILED with a reason. Never raises for AI errors."""
+    with span(
+        "transformation.execute",
+        **{
+            "transformation.id": _str_or_none(getattr(transformation, "id", None)),
+            "transformation.type": getattr(
+                getattr(transformation, "transformation_type", None), "value", None
+            ),
+            "workspace.id": _str_or_none(getattr(transformation, "workspace_id", None)),
+        },
+    ) as current:
+        result = await _execute(db, transformation, content, prompt)
+        current.set_attribute("transformation.status", getattr(result.status, "value", str(result.status)))
+        for attribute, field in (("ai.provider", "ai_provider"), ("ai.tokens", "tokens_used"), ("ai.cost_usd", "ai_cost")):
+            value = getattr(result, field, None)
+            if value is not None:
+                current.set_attribute(attribute, value)
+        if result.status == TransformationStatus.FAILED:
+            current.set_status(Status(StatusCode.ERROR, result.error_message or "failed"))
+        return result
+
+
+def _str_or_none(value) -> Optional[str]:
+    return None if value is None else str(value)
+
+
+async def _execute(
+    db: AsyncSession,
+    transformation: TransformationDB,
+    content: str,
+    prompt: Optional[str],
+) -> TransformationDB:
     if transformation.status != TransformationStatus.PROCESSING:
         transformation.status = TransformationStatus.PROCESSING
         transformation.updated_at = datetime.utcnow()

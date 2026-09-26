@@ -58,6 +58,14 @@ sequenceDiagram
 
 Celery tasks are synchronous functions. Running each task under a new `asyncio.run()` looks tidy, but the provider manager is a process-wide singleton. Its async SDK clients keep connection pools bound to the loop that created them, so from the second task on they'd be talking to a closed loop. Each worker process therefore runs coroutines on one persistent loop (`tasks/db.py: run_async`). Database connections use `NullPool` and are closed per task, so the session-level RLS setting can't leak between tasks.
 
+## Observability
+
+Tracing is OpenTelemetry, set up in `app/core/telemetry.py`, and off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+
+- **What's instrumented:** FastAPI, SQLAlchemy, Redis, httpx (so the AI provider calls appear) and Celery.
+- **Propagation:** Celery carries the trace context in task headers, so one trace covers the whole path: the HTTP request, the enqueue, the worker's claim, `transformation.execute` (with type, workspace, provider, tokens, cost and status attributes), and the progress events published back to Redis.
+- **Where traces go:** `make up-traced` runs Jaeger locally. In production, point the endpoint at any OTLP backend.
+
 ## Data model
 
 All tables use UUID primary keys and carry `created_at`/`updated_at`, audit columns (`created_by`, `updated_by`) and soft-delete columns (`deleted_at`, `deleted_by`).
@@ -101,6 +109,7 @@ Everything comes from environment variables (`backend/app/core/config.py`, docum
 | `CLAUDE_API_KEY`, `OPENAI_API_KEY` | Enable real providers; with neither set (and not production) the mock provider is used |
 | `TRANSFORMATION_EXECUTION` | `celery` (default) or `inline` for a worker-less local setup |
 | `AI_WORKSPACE_MONTHLY_REQUESTS`, `AI_WORKSPACE_MONTHLY_BUDGET_USD` | Default monthly AI limits; a workspace's `ai_requests_per_month` / `ai_monthly_budget_usd` settings override them |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (+ standard `OTEL_*`) | Turns tracing on and sets where spans go |
 | `PLATFORM_ADMIN_USER_IDS` | Comma-separated user IDs allowed to use operator endpoints |
 | `CORS_ORIGINS`, `CORS_ORIGIN_REGEX` | Allowed browser origins (regex for preview deployments) |
 | `RATE_LIMIT_*` | Rate-limit budgets |

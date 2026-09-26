@@ -1,6 +1,7 @@
 # Local development stack.
 #   docker compose up -d            -> postgres, redis, api (runs migrations on start), worker, beat
 #   docker compose --profile tools up -d   -> also pgAdmin and Redis Commander
+#   make up-traced                         -> also Jaeger, with tracing switched on
 #
 # Values are read from .env when present; defaults work without one.
 # With no AI key set, the API uses the built-in mock provider (development only;
@@ -22,6 +23,8 @@ x-app-env: &app-env
   CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
   AI_PROVIDER: ${AI_PROVIDER:-anthropic}
   CORS_ORIGINS: '["http://localhost:3000","http://localhost:8000"]'
+  # Tracing is off unless set; `make up-traced` points it at the Jaeger service below.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
   # Integration tests register many users quickly; CI raises these limits.
   RATE_LIMIT_AUTH_ATTEMPTS: ${RATE_LIMIT_AUTH_ATTEMPTS:-5/15m}
   RATE_LIMIT_API_CALLS: ${RATE_LIMIT_API_CALLS:-100/1m}
@@ -109,6 +112,12 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 10
+
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    profiles: [observability]
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"  # UI; the app sends OTLP to jaeger:4318 on the network
 
   pgadmin:
     image: dpage/pgadmin4:latest

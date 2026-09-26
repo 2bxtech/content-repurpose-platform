@@ -11,6 +11,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.core.telemetry import instrument_app, setup_tracing
+
+# Before any engine or client exists, so their instrumentation hooks apply.
+setup_tracing("content-repurpose-api")
+
 from app.api.routes.ai_providers import router as ai_providers_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.documents import router as documents_router
@@ -82,6 +87,7 @@ app = FastAPI(
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
 )
+instrument_app(app)
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):

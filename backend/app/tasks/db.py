@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.telemetry import setup_tracing
 from app.core.tenancy import check_rls_enforced, enforce_app_role
 
 T = TypeVar("T")
@@ -78,6 +79,12 @@ async def task_session(
             if bypass_rls:
                 session.sync_session.info["rls_bypass"] = True
             yield session
+
+
+@worker_process_init.connect
+def _setup_tracing(**_kwargs) -> None:
+    # Per prefork child, after the fork (exporter threads don't survive fork).
+    setup_tracing("content-repurpose-worker")
 
 
 @worker_process_init.connect

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help env up down logs migrate api worker beat frontend install test test-integration lint build-frontend clean
+.PHONY: help env up up-traced down logs migrate api worker beat frontend install test test-integration lint build-frontend clean
 
 PY ?= python
 VENV := .venv
@@ -18,6 +18,9 @@ env: ## Create .env from .env.example (no-op if it exists)
 # --- Full stack in Docker -----------------------------------------------------
 up: env ## Start postgres, redis, api (auto-migrates), worker, beat
 	docker compose up -d --build --wait
+
+up-traced: env ## Like `up`, plus Jaeger; open http://localhost:16686 for traces
+	OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 docker compose --profile observability up -d --build --wait
 
 down: ## Stop the stack
 	docker compose down
