@@ -1,7 +1,8 @@
 # backend/app/core/database.py
 # Production-grade async SQLAlchemy configuration
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext import asyncio as sa_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
@@ -64,7 +65,8 @@ def _initialize_engine():
     try:
         config = DatabaseConfig.create_engine_config()
         if config:
-            engine = create_async_engine(**config)
+            # Looked up at call time so tracing's instrumented factory is used.
+            engine = sa_asyncio.create_async_engine(**config)
             enforce_app_role(engine.sync_engine)
             
             # Critical: expire_on_commit=False prevents lazy loading issues

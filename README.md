@@ -65,6 +65,7 @@ The deeper write-up, covering request lifecycle, data model and failure handling
 | AI | Anthropic and OpenAI SDKs behind a provider manager; mock provider for dev/CI |
 | Auth | JWT (PyJWT) access + refresh with rotation, bcrypt, Redis-backed sessions and rate limits |
 | Frontend | React 18, TypeScript, MUI 5, TanStack Query, React Router |
+| Observability | OpenTelemetry traces (FastAPI, SQLAlchemy, Redis, Celery, httpx) exported over OTLP; Jaeger for local viewing |
 | Tooling | Docker Compose, Make, pytest, Jest, Ruff, GitHub Actions, gitleaks |
 | Deploy | Railway (API + worker, Dockerfile), Vercel (frontend) |
 
@@ -83,6 +84,7 @@ cd frontend && npm ci && npm start
 - App: http://localhost:3000. Register, then try **Quick Transform**.
 - API docs: http://localhost:8000/docs
 - If ports 5433/6379/8000 are taken, override them with `POSTGRES_HOST_PORT`, `REDIS_HOST_PORT` and `API_HOST_PORT`. For example, `API_HOST_PORT=8080 make up`, then start the frontend with `REACT_APP_API_URL=http://localhost:8080/api npm start`.
+- `make up-traced` also starts Jaeger (http://localhost:16686): one trace follows a transformation from the HTTP request through the queue into the worker.
 - `make help` lists all targets, including `make api` / `make worker` for running the backend on the host with reload.
 
 ## Tests
@@ -100,7 +102,6 @@ The integration suite drives the real stack. It checks that a transformation cre
 ## What I'd do next
 
 - **Verify email addresses before they unlock anything sensitive.**
-- **OpenTelemetry traces across API, queue and worker.**
 
 ## License
 

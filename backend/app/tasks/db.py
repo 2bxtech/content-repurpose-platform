@@ -14,10 +14,12 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Optional, TypeVar
 
 from celery.signals import worker_process_init
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext import asyncio as sa_asyncio
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.telemetry import setup_tracing
 from app.core.tenancy import check_rls_enforced, enforce_app_role
 
 T = TypeVar("T")
@@ -54,7 +56,9 @@ def _get_engine() -> AsyncEngine:
     # session-level settings (the RLS workspace) can never leak between tasks.
     global _engine
     if _engine is None:
-        _engine = create_async_engine(settings.get_database_url(), poolclass=NullPool)
+        # Looked up at call time: tracing patches the factory after this module is
+        # imported (worker_process_init), so a from-import would bypass it.
+        _engine = sa_asyncio.create_async_engine(settings.get_database_url(), poolclass=NullPool)
         enforce_app_role(_engine.sync_engine)
     return _engine
 
@@ -78,6 +82,12 @@ async def task_session(
             if bypass_rls:
                 session.sync_session.info["rls_bypass"] = True
             yield session
+
+
+@worker_process_init.connect
+def _setup_tracing(**_kwargs) -> None:
+    # Per prefork child, after the fork (exporter threads don't survive fork).
+    setup_tracing("content-repurpose-worker")
 
 
 @worker_process_init.connect

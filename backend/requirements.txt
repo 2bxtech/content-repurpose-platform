@@ -38,3 +38,12 @@ pymupdf==1.28.2
 Pillow==12.3.0
 python-magic==0.4.27
 chardet==5.2.0
+
+# Tracing (inactive unless OTEL_EXPORTER_OTLP_ENDPOINT is set)
+opentelemetry-sdk==1.45.0
+opentelemetry-exporter-otlp-proto-http==1.45.0
+opentelemetry-instrumentation-fastapi==0.66b0
+opentelemetry-instrumentation-sqlalchemy==0.66b0
+opentelemetry-instrumentation-redis==0.66b0
+opentelemetry-instrumentation-celery==0.66b0
+opentelemetry-instrumentation-httpx==0.66b0
