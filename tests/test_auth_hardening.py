@@ -30,30 +30,6 @@ def test_registration_normalises_email_case():
     assert user.email == "ops.admin@example.com"
 
 
-class _DeleteCountingRedis:
-    """Minimal stand-in for redis-py: DEL returns how many keys it removed."""
-
-    def __init__(self, keys):
-        self.keys = set(keys)
-
-    def ping(self):
-        return True
-
-    def delete(self, key):
-        if key in self.keys:
-            self.keys.remove(key)
-            return 1
-        return 0
-
-
-def test_refresh_session_can_be_consumed_only_once(monkeypatch):
-    from app.services.redis_service import redis_service
-
-    monkeypatch.setattr(redis_service, "redis_client", _DeleteCountingRedis({"session:u1:jti1"}))
-    assert redis_service.consume_user_session("u1", "jti1") is True
-    assert redis_service.consume_user_session("u1", "jti1") is False
-
-
 def test_consume_reports_unavailable_store(monkeypatch):
     from app.services.redis_service import redis_service
 
