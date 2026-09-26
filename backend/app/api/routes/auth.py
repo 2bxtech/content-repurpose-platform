@@ -748,8 +748,14 @@ async def resend_verification(current_user: Annotated[dict, Depends(get_current_
     """Send a fresh verification link to the signed-in user (rate-limited)."""
     if current_user.get("is_verified"):
         return {"sent": False, "detail": "Email already verified"}
-    await send_verification_email(
+    sent = await send_verification_email(
         current_user["email"],
         auth_service.create_email_verification_token(current_user["id"], current_user["email"]),
     )
+    if not sent:
+        # Retryable: the client keeps offering "resend" instead of claiming success.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Couldn't send the verification email. Please try again later.",
+        )
     return {"sent": True}

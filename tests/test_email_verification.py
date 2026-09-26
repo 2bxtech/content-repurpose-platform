@@ -86,3 +86,46 @@ async def test_verification_flow(api_client, user_factory):
 
     resend = await api_client.post("/api/auth/resend-verification", headers=user["headers"])
     assert resend.json()["sent"] is False  # nothing to do once verified
+
+
+async def test_resend_reports_failed_delivery_as_retryable(monkeypatch):
+    from app.api.routes import auth as auth_routes
+
+    async def undeliverable(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(auth_routes, "send_verification_email", undeliverable)
+    with pytest.raises(HTTPException) as exc:
+        await auth_routes.resend_verification(
+            {"id": str(uuid.uuid4()), "email": "a@example.com", "is_verified": False}
+        )
+    assert exc.value.status_code == 503
+
+
+def test_smtp_verifies_the_server_certificate(monkeypatch):
+    calls = {}
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self, context=None):
+            calls["context"] = context
+
+        def login(self, *args):
+            pass
+
+        def send_message(self, message):
+            calls["sent"] = True
+
+    monkeypatch.setattr(email_service.smtplib, "SMTP", FakeSMTP)
+    email_service._send_smtp("a@example.com", "subject", "body")
+
+    assert calls["sent"] and calls["context"] is not None
+    assert calls["context"].check_hostname is True

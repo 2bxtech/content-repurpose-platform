@@ -1,11 +1,12 @@
 """Outbound email: SMTP when configured, otherwise the log (development only).
 
-Delivery failures never fail the request that triggered them; they're logged,
-and the user can ask for another email.
+Senders return whether delivery worked. Registration doesn't fail over a
+failed email (the user can ask for another); the resend endpoint reports it.
 """
 
 import logging
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 from starlette.concurrency import run_in_threadpool
@@ -22,7 +23,8 @@ def _send_smtp(to: str, subject: str, body: str) -> None:
     message["Subject"] = subject
     message.set_content(body)
     with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as smtp:
-        smtp.starttls()
+        # Verify the server certificate: credentials and verification links go over this.
+        smtp.starttls(context=ssl.create_default_context())
         if settings.SMTP_USERNAME:
             smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
         smtp.send_message(message)
