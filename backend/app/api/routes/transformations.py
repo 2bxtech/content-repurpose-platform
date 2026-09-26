@@ -30,6 +30,7 @@ from app.core.database import get_db_session
 from app.core.config import settings
 from app.services.transformation_prompt import get_transformation_prompt, CONTENT_REPURPOSE_SYSTEM_PROMPT
 from app.services.ai_providers import get_ai_provider_manager
+from app.services.ai_budget import require_ai_budget
 from app.services.transformation_runner import execute_transformation
 from app.tasks.transformation_tasks import process_transformation_task
 from starlette.concurrency import run_in_threadpool
@@ -58,7 +59,8 @@ async def create_transformation(
     try:
         user_id = uuid.UUID(current_user["id"])
         workspace_id = workspace_context["workspace_id"]
-        
+        await require_ai_budget(db, workspace_id)
+
         logger.info(f"Creating transformation: user_id={user_id}, workspace_id={workspace_id}, document_id={transformation.document_id}")
         
         # Get workspace using explicit async queries (no RLS complexity)
@@ -243,6 +245,7 @@ async def quick_transform(
     """
     user_id = uuid.UUID(current_user["id"])
     workspace_id = workspace_context["workspace_id"]
+    await require_ai_budget(db, workspace_id)
 
     # Auto-generate title from first words of content if not provided
     title = request.title or " ".join(request.content.split()[:8]).rstrip(".,;:!?") or "Quick transform"
@@ -465,6 +468,7 @@ async def refine_transformation(
     """
     user_id = uuid.UUID(current_user["id"])
     workspace_id = workspace_context["workspace_id"]
+    await require_ai_budget(db, workspace_id)
 
     # Load original transformation (workspace + user scoped)
     stmt = (

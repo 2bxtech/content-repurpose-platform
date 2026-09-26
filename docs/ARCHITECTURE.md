@@ -49,6 +49,7 @@ sequenceDiagram
 | Unexpected exception in the worker | Caught at the task boundary; the row is `FAILED` so clients stop polling |
 | Task exceeds the 10 min soft limit | The coroutine is cancelled and drained so it can't resume in the next task; the row is `FAILED` ("timed out") |
 | Task hits the 12 min hard limit | The process is killed without writing anything; the sweeper fails the row once it is 30 min old |
+| Workspace over its monthly AI limit | New work is refused with 402; a job queued before the limit was hit fails in the worker before the provider is called |
 | Worker dies / message lost | Beat's sweeper fails `PENDING`/`PROCESSING` rows older than 30 minutes |
 | Late result after the sweeper fired | The final write is conditional on `status = PROCESSING`, so it can't flip `FAILED` back to `COMPLETED` |
 | Redis down | The broker is down too, so new work is marked `FAILED` at enqueue. Worker progress events are lost; API-originated socket messages are delivered locally; the listener keeps retrying and clients fall back to polling |
@@ -99,6 +100,7 @@ Everything comes from environment variables (`backend/app/core/config.py`, docum
 | `DATABASE_URL`, `REDIS_URL` | Hosted connection strings; component variables are used when these are empty |
 | `CLAUDE_API_KEY`, `OPENAI_API_KEY` | Enable real providers; with neither set (and not production) the mock provider is used |
 | `TRANSFORMATION_EXECUTION` | `celery` (default) or `inline` for a worker-less local setup |
+| `AI_WORKSPACE_MONTHLY_REQUESTS`, `AI_WORKSPACE_MONTHLY_BUDGET_USD` | Default monthly AI limits; a workspace's `ai_requests_per_month` / `ai_monthly_budget_usd` settings override them |
 | `PLATFORM_ADMIN_USER_IDS` | Comma-separated user IDs allowed to use operator endpoints |
 | `CORS_ORIGINS`, `CORS_ORIGIN_REGEX` | Allowed browser origins (regex for preview deployments) |
 | `RATE_LIMIT_*` | Rate-limit budgets |

@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     )
 
     # AI Cost Management
+    # Per-workspace monthly limits (a workspace's settings can override them).
+    AI_WORKSPACE_MONTHLY_REQUESTS: int = Field(default=1000, ge=0)
+    AI_WORKSPACE_MONTHLY_BUDGET_USD: float = Field(default=10.0, ge=0)
     AI_MAX_COST_PER_HOUR: float = Field(
         default=10.0, description="Maximum cost per hour across all providers"
     )
