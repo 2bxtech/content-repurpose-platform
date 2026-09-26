@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -57,11 +57,15 @@ async def ai_budget_status(db: AsyncSession, workspace_id: uuid.UUID) -> AIBudge
             )
         )
     ).one()
+    def limit(key, default):
+        value = workspace_settings.get(key)
+        return default if value is None else value  # 0 is a real limit: no AI at all
+
     return AIBudgetStatus(
         requests_used=int(used),
-        requests_limit=int(workspace_settings.get("ai_requests_per_month", settings.AI_WORKSPACE_MONTHLY_REQUESTS)),
+        requests_limit=int(limit("ai_requests_per_month", settings.AI_WORKSPACE_MONTHLY_REQUESTS)),
         spend_usd=float(spend),
-        budget_usd=float(workspace_settings.get("ai_monthly_budget_usd", settings.AI_WORKSPACE_MONTHLY_BUDGET_USD)),
+        budget_usd=float(limit("ai_monthly_budget_usd", settings.AI_WORKSPACE_MONTHLY_BUDGET_USD)),
         period_start=start,
     )
 
@@ -70,6 +74,13 @@ async def require_ai_budget(db: Optional[AsyncSession], workspace_id: uuid.UUID)
     """Raise 402 if the workspace can't start more AI work this month."""
     if db is None:  # in-memory dev mode has no usage history
         return
+    # Serialize check-then-insert per workspace: the lock is held until the caller's
+    # transaction commits the new transformation, so concurrent requests can't all
+    # see the same "one left". It's released at that first commit, before the AI call.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"ai_budget:{workspace_id}"},
+    )
     reason = (await ai_budget_status(db, workspace_id)).exhausted_reason
     if reason:
         raise HTTPException(

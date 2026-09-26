@@ -23,7 +23,9 @@ class WorkspaceSettings(BaseModel):
     max_users: int = 10
     max_documents: int = 100
     max_storage_mb: int = 1000
-    ai_requests_per_month: int = 1000
+    # AI limits: None means the deployment default (AI_WORKSPACE_MONTHLY_*).
+    ai_requests_per_month: Optional[int] = None
+    ai_monthly_budget_usd: Optional[float] = None
     features_enabled: List[str] = ["basic_transformations"]
 
 
@@ -51,10 +53,11 @@ class WorkspaceCreate(WorkspaceBase):
 
 
 class WorkspaceUpdate(BaseModel):
+    """What a workspace owner/admin may change. Plan and limits (settings) are
+    operator-managed: a tenant must not be able to raise its own AI budget."""
+
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
-    plan: Optional[WorkspacePlan] = None
-    settings: Optional[WorkspaceSettings] = None
     is_active: Optional[bool] = None
 
 

@@ -105,3 +105,36 @@ async def test_spend_budget_blocks_quick_transform_and_usage_reports_it(api_clie
     usage = (await api_client.get(f"/api/workspaces/{user['workspace_id']}/usage", headers=user["headers"])).json()
     assert usage["limits"]["ai_monthly_budget_usd"] == 0
     assert "ai_spend_this_month_usd" in usage["current_usage"]
+
+
+@pytest.mark.integration
+async def test_concurrent_requests_cannot_overrun_the_request_limit(api_client, superuser_db):
+    import asyncio
+
+    user = await _user_with_document(api_client)
+    _set_limits(superuser_db, user["workspace_id"], ai_requests_per_month=1)
+    body = {"document_id": user["document_id"], "transformation_type": "SUMMARY", "parameters": {}}
+
+    responses = await asyncio.gather(
+        *[api_client.post("/api/transformations", json=body, headers=user["headers"]) for _ in range(5)]
+    )
+
+    assert sorted(r.status_code for r in responses) == [201, 402, 402, 402, 402]
+
+
+@pytest.mark.integration
+async def test_workspace_owner_cannot_raise_their_own_limits(api_client, superuser_db):
+    user = await _user_with_document(api_client)
+    _set_limits(superuser_db, user["workspace_id"], ai_monthly_budget_usd=0)
+
+    r = await api_client.put(
+        f"/api/workspaces/{user['workspace_id']}",
+        json={"name": "Renamed", "plan": "enterprise", "settings": {"ai_monthly_budget_usd": 1_000_000}},
+        headers=user["headers"],
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Renamed"
+
+    usage = (await api_client.get(f"/api/workspaces/{user['workspace_id']}/usage", headers=user["headers"])).json()
+    assert usage["limits"]["ai_monthly_budget_usd"] == 0
+    assert usage["plan"] != "enterprise"
