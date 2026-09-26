@@ -24,7 +24,13 @@ assert telemetry.setup_tracing("test-api", exporter=exporter)
 
 from fastapi.testclient import TestClient
 from main import app
-TestClient(app).get("/")
+client = TestClient(app)
+client.get("/")
+try:
+    with client.websocket_connect("/api/ws?token=SECRET-TOKEN-VALUE&workspace_id=w-1"):
+        pass
+except Exception:
+    pass  # rejected: the token is fake; only what gets exported matters here
 
 from app.models.transformation import TransformationStatus
 from app.services import transformation_runner as runner
@@ -55,6 +61,9 @@ print(json.dumps({
     "names": [s.name for s in spans],
     "executor": next(dict(s.attributes) for s in spans if s.name == "transformation.execute"),
     "service": spans[0].resource.attributes["service.name"],
+    "leaks_token": any(
+        "SECRET-TOKEN-VALUE" in str(value) for s in spans for value in (s.attributes or {}).values()
+    ),
 }))
 """
 
@@ -89,6 +98,7 @@ def test_api_requests_and_transformations_are_traced():
     out = json.loads(_run(ENABLED))
 
     assert out["service"] == "test-api"
+    assert out["leaks_token"] is False
     assert any(name.startswith("GET") for name in out["names"]), out["names"]
     attrs = out["executor"]
     assert attrs["transformation.status"] == "COMPLETED"

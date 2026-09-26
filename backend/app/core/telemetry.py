@@ -69,8 +69,10 @@ def instrument_app(app) -> None:
     if _configured:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        # Health checks are frequent and uninteresting.
-        FastAPIInstrumentor.instrument_app(app, excluded_urls="api/health")
+        # Health checks are noise. The WebSocket handshake carries the access token
+        # in its query string (browsers can't set headers there), and the request
+        # span would export it verbatim as http.url.
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="api/health,api/ws")
 
 
 @contextmanager
