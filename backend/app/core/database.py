@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
 from .config import settings
+from .tenancy import enforce_app_role
 import logging
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ def _initialize_engine():
         config = DatabaseConfig.create_engine_config()
         if config:
             engine = create_async_engine(**config)
+            enforce_app_role(engine.sync_engine)
             
             # Critical: expire_on_commit=False prevents lazy loading issues
             async_session_factory = async_sessionmaker(

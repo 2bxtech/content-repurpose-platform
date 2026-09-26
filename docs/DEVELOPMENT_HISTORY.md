@@ -31,3 +31,10 @@ An audit before publishing compared the README against the code and found featur
 - **#8 UI polish.** Markdown tables render, and result pages have readable titles.
 - **#9 Fact-check fixes.** A docs-versus-code review found the mock provider could mask a failing real one, and `.env` settings weren't reaching the containers. Both are fixed.
 - **#7 Docs.** This README and the docs in `docs/`.
+- **#11–#16 Hardening follow-ups.**
+  - Refresh tokens are single-use, even across replicas (atomic consume).
+  - Upload content sniffing actually runs: libmagic was missing from the image, and mismatches were only logged.
+  - Pre-commit hooks for ruff and gitleaks.
+  - Dependency refresh and a trixie base image with 0 critical CVEs.
+  - An async rate limiter, removing two blocking Redis calls from every request.
+  - Postgres row-level security enforced through an unprivileged app role, checked by a test inside the database.

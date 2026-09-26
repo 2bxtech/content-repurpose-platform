@@ -26,6 +26,7 @@ from app.models.auth import (
 from app.db.models.user import User as UserDB, UserRole as DBUserRole
 from app.core.config import settings
 from app.core.database import get_db_session
+from app.core.tenancy import rls_bypass, set_tenant
 from app.services.auth_service import auth_service
 from app.services.redis_service import redis_service
 from app.services.workspace_service import workspace_service
@@ -65,14 +66,18 @@ async def get_db_user(db: AsyncSession, email: str):
         .order_by((UserDB.email == email).desc(), UserDB.created_at)
         .limit(1)
     )
-    result = await db.execute(stmt)
+    # Identity lookup: runs before any workspace is known.
+    async with rls_bypass(db):
+        result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
 async def get_db_user_by_id(db: AsyncSession, user_id: uuid.UUID):
     """Get user by ID from database"""
     stmt = select(UserDB).where(UserDB.id == user_id)
-    result = await db.execute(stmt)
+    # Identity lookup: runs before any workspace is known.
+    async with rls_bypass(db):
+        result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
@@ -116,6 +121,9 @@ async def get_current_user(
         user = await get_db_user_by_id(db, token_data.user_id)
         if user is None:
             raise credentials_exception
+
+        # From here on the request only sees this user's workspace (Postgres RLS).
+        await set_tenant(db, user.workspace_id)
 
         # Convert to dict for compatibility
         user_dict = {
@@ -200,41 +208,43 @@ async def register_user(
         hashed_password = auth_service.get_password_hash(user.password)
 
         try:
-            # Step 1: Create workspace first
-            workspace = await workspace_service.create_default_workspace(db, None)
-            await db.flush()
-            
-            # Step 2: Create user with the workspace_id
-            user_db = UserDB(
-                email=user.email,
-                username=user.username,
-                hashed_password=hashed_password,
-                is_active=True,
-                is_verified=False,
-                workspace_id=workspace.id,
-                role=DBUserRole.OWNER,
-            )
+            # Registration creates a new tenant, so it runs outside any workspace scope.
+            async with rls_bypass(db):
+                # Step 1: Create workspace first
+                workspace = await workspace_service.create_default_workspace(db, None)
+                await db.flush()
 
-            db.add(user_db)
-            await db.flush()
+                # Step 2: Create user with the workspace_id
+                user_db = UserDB(
+                    email=user.email,
+                    username=user.username,
+                    hashed_password=hashed_password,
+                    is_active=True,
+                    is_verified=False,
+                    workspace_id=workspace.id,
+                    role=DBUserRole.OWNER,
+                )
 
-            # Step 3: Update workspace created_by field
-            workspace.created_by = user_db.id
-            
-            await db.commit()
-            await db.refresh(user_db)
+                db.add(user_db)
+                await db.flush()
 
-            logger.info(f"New user registered: {user.email} (ID: {user_db.id})")
+                # Step 3: Update workspace created_by field
+                workspace.created_by = user_db.id
 
-            return User(
-                id=user_db.id,
-                email=user_db.email,
-                username=user_db.username,
-                is_active=user_db.is_active,
-                is_verified=user_db.is_verified,
-                role=UserRole(user_db.role.value),
-                created_at=user_db.created_at,
-            )
+                await db.commit()
+                await db.refresh(user_db)
+
+                logger.info(f"New user registered: {user.email} (ID: {user_db.id})")
+
+                return User(
+                    id=user_db.id,
+                    email=user_db.email,
+                    username=user_db.username,
+                    is_active=user_db.is_active,
+                    is_verified=user_db.is_verified,
+                    role=UserRole(user_db.role.value),
+                    created_at=user_db.created_at,
+                )
 
         except Exception as e:
             await db.rollback()

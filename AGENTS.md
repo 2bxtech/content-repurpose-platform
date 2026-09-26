@@ -16,7 +16,7 @@ Context for AI coding agents (and humans) working in this repo. Keep it short an
 - `make install` also installs pre-commit hooks (ruff, gitleaks, private-key and large-file checks); `pre-commit run -a` runs them on everything.
 
 ## Invariants (don't break these)
-- **Tenancy:** every query on tenant data filters by the `workspace_id` from the signed token, never from the request body. Cross-tenant access returns 404 (403 for workspace endpoints).
+- **Tenancy:** every query on tenant data filters by the user's workspace, never one from the request body; cross-tenant access returns 404 (403 for workspace endpoints). Postgres RLS enforces the same boundary (`app/core/tenancy.py`). New code that genuinely spans workspaces must use `rls_bypass(db)` explicitly. Never grant the app role `BYPASSRLS` or ownership, and give new tenant tables a policy in their migration.
 - **Transformations:** status goes `PENDING → PROCESSING → COMPLETED|FAILED`.
   - The worker claims a row with a conditional `UPDATE ... WHERE status = 'PENDING'`.
   - The final write is conditional on `PROCESSING`.

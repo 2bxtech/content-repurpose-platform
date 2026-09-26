@@ -72,7 +72,13 @@ Schema changes go through Alembic only (`backend/alembic/versions/`). The API ne
 ## Multi-tenancy
 
 1. **Application layer (enforced today).** The workspace is the authenticated user's own, looked up from the token's user ID and never taken from the request body. Every read and write filters on it, and cross-tenant lookups return 404. The WebSocket handshake rejects a `workspace_id` that doesn't match the token.
-2. **Database layer (policies in place, enforcement pending).** Every tenant table has an RLS policy on `current_setting('app.workspace_id', true)`. The document routes set it with `set_config(..., true)` (transaction-scoped), and workers set it session-level on a dedicated connection. Setting it in every request handler is part of the enforcement work. Because the app currently connects as the table owner, Postgres doesn't apply the policies. Turning them on needs a non-owner role with `FORCE ROW LEVEL SECURITY`, the context set in every handler, and a bypass role for the paths that legitimately span workspaces (login by email, the stuck-job sweeper).
+2. **Database layer (enforced).** Every tenant table has a policy (reads and writes) matching `app.workspace_id`. The mechanics live in `app/core/tenancy.py`:
+   - **Role.** Owners and superusers skip RLS, so each new connection runs `SET ROLE content_repurpose_app`, an unprivileged role with DML rights only (created by migration `b7e1c9d2a4f0`). Migrations still run as the owner.
+   - **Context.** Resolving the current user scopes the request's session to that user's workspace (`set_tenant`). A SQLAlchemy `after_begin` hook re-applies it as a transaction-local setting at the start of every transaction, so it survives the commits a request or worker task makes and never leaks across pooled connections.
+   - **Fail closed.** With no workspace set, the policies match nothing (`NULLIF(..., '')` turns an empty setting into no rows, not a cast error).
+   - **Explicit exceptions.** Identity lookups, registration, workspace creation and the stuck-job sweeper wrap their queries in `rls_bypass`, which sets `app.rls_bypass` for that scope only.
+   - **Guarded at startup.** The API and each worker process check that Postgres will actually apply RLS to them (not a superuser, `BYPASSRLS` role or table owner). In production they refuse to start otherwise; `/api/health` reports `row_level_security: enforced`.
+   - **Verified in the database.** `tests/test_rls_enforcement.py` connects as the app role and checks that another workspace's rows can't be read, updated or claimed, and that the role can't disable RLS.
 
 ## Security
 

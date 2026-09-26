@@ -84,8 +84,6 @@ async def upload_document(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg
             )
 
-        # Set workspace context for RLS
-        await workspace_service.set_workspace_context(db, workspace_id)
 
     # Create upload directory if it doesn't exist
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -186,8 +184,6 @@ async def upload_document(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to create document record: {str(e)}",
             )
-        finally:
-            await workspace_service.clear_workspace_context(db)
 
     else:
         # Fallback to in-memory storage with proper UUID
@@ -261,7 +257,6 @@ async def create_document_from_text(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg
             )
 
-        await workspace_service.set_workspace_context(db, workspace_id)
         try:
             document_db = DocumentDB(
                 workspace_id=workspace_id,
@@ -303,8 +298,6 @@ async def create_document_from_text(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to create document: {str(e)}",
             )
-        finally:
-            await workspace_service.clear_workspace_context(db)
 
     else:
         document_uuid = uuid.uuid4()
@@ -450,7 +443,6 @@ async def create_document_from_url(
         if not can_create:
             raise HTTPException(status_code=400, detail=error_msg)
 
-        await workspace_service.set_workspace_context(db, workspace_id)
         try:
             document_db = DocumentDB(
                 workspace_id=workspace_id,
@@ -482,8 +474,6 @@ async def create_document_from_url(
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to create document: {str(e)}")
-        finally:
-            await workspace_service.clear_workspace_context(db)
     else:
         doc_uuid = uuid.uuid4()
         doc = {"id": str(doc_uuid), "user_id": current_user["id"], "title": doc_title,
@@ -507,47 +497,42 @@ async def get_user_documents(
     workspace_id = workspace_context["workspace_id"]
 
     if db:
-        # Set workspace context for RLS
-        await workspace_service.set_workspace_context(db, workspace_id)
 
-        try:
-            # Get documents with RLS automatically filtering by workspace
-            stmt = (
-                select(DocumentDB)
-                .where(
-                    and_(
-                        DocumentDB.workspace_id == workspace_id,
-                        DocumentDB.user_id == current_user["id"],
-                        DocumentDB.deleted_at.is_(None),
-                    )
+        # Get documents with RLS automatically filtering by workspace
+        stmt = (
+            select(DocumentDB)
+            .where(
+                and_(
+                    DocumentDB.workspace_id == workspace_id,
+                    DocumentDB.user_id == current_user["id"],
+                    DocumentDB.deleted_at.is_(None),
                 )
-                .order_by(DocumentDB.created_at.desc())
+            )
+            .order_by(DocumentDB.created_at.desc())
+        )
+
+        result = await db.execute(stmt)
+        documents_db = result.scalars().all()
+
+        documents = []
+        for doc_db in documents_db:
+            documents.append(
+                Document(
+                    id=doc_db.id,
+                    user_id=doc_db.user_id,
+                    title=doc_db.title,
+                    description=doc_db.description,
+                    file_path=doc_db.file_path,
+                    original_filename=doc_db.original_filename,
+                    content_type=doc_db.content_type,
+                    status=doc_db.status,
+                    created_at=doc_db.created_at,
+                    updated_at=doc_db.updated_at,
+                )
             )
 
-            result = await db.execute(stmt)
-            documents_db = result.scalars().all()
+        return DocumentList(documents=documents, count=len(documents))
 
-            documents = []
-            for doc_db in documents_db:
-                documents.append(
-                    Document(
-                        id=doc_db.id,
-                        user_id=doc_db.user_id,
-                        title=doc_db.title,
-                        description=doc_db.description,
-                        file_path=doc_db.file_path,
-                        original_filename=doc_db.original_filename,
-                        content_type=doc_db.content_type,
-                        status=doc_db.status,
-                        created_at=doc_db.created_at,
-                        updated_at=doc_db.updated_at,
-                    )
-                )
-
-            return DocumentList(documents=documents, count=len(documents))
-
-        finally:
-            await workspace_service.clear_workspace_context(db)
 
     else:
         # Fallback to in-memory storage
@@ -567,42 +552,37 @@ async def get_document(
     workspace_id = workspace_context["workspace_id"]
 
     if db:
-        # Set workspace context for RLS
-        await workspace_service.set_workspace_context(db, workspace_id)
 
-        try:
-            stmt = select(DocumentDB).where(
-                and_(
-                    DocumentDB.id == document_id,
-                    DocumentDB.workspace_id == workspace_id,
-                    DocumentDB.user_id == current_user["id"],
-                    DocumentDB.deleted_at.is_(None),
-                )
+        stmt = select(DocumentDB).where(
+            and_(
+                DocumentDB.id == document_id,
+                DocumentDB.workspace_id == workspace_id,
+                DocumentDB.user_id == current_user["id"],
+                DocumentDB.deleted_at.is_(None),
+            )
+        )
+
+        result = await db.execute(stmt)
+        document_db = result.scalar_one_or_none()
+
+        if not document_db:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
             )
 
-            result = await db.execute(stmt)
-            document_db = result.scalar_one_or_none()
+        return Document(
+            id=document_db.id,
+            user_id=document_db.user_id,
+            title=document_db.title,
+            description=document_db.description,
+            file_path=document_db.file_path,
+            original_filename=document_db.original_filename,
+            content_type=document_db.content_type,
+            status=document_db.status,
+            created_at=document_db.created_at,
+            updated_at=document_db.updated_at,
+        )
 
-            if not document_db:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-                )
-
-            return Document(
-                id=document_db.id,
-                user_id=document_db.user_id,
-                title=document_db.title,
-                description=document_db.description,
-                file_path=document_db.file_path,
-                original_filename=document_db.original_filename,
-                content_type=document_db.content_type,
-                status=document_db.status,
-                created_at=document_db.created_at,
-                updated_at=document_db.updated_at,
-            )
-
-        finally:
-            await workspace_service.clear_workspace_context(db)
 
     else:
         # Fallback to in-memory storage - search by UUID string
@@ -641,49 +621,44 @@ async def get_document_preview(
     workspace_id = workspace_context["workspace_id"]
 
     if db:
-        # Set workspace context for RLS
-        await workspace_service.set_workspace_context(db, workspace_id)
 
-        try:
-            stmt = select(DocumentDB).where(
-                and_(
-                    DocumentDB.id == document_id,
-                    DocumentDB.workspace_id == workspace_id,
-                    DocumentDB.user_id == current_user["id"],
-                    DocumentDB.deleted_at.is_(None),
-                )
+        stmt = select(DocumentDB).where(
+            and_(
+                DocumentDB.id == document_id,
+                DocumentDB.workspace_id == workspace_id,
+                DocumentDB.user_id == current_user["id"],
+                DocumentDB.deleted_at.is_(None),
             )
+        )
 
-            result = await db.execute(stmt)
-            document_db = result.scalar_one_or_none()
+        result = await db.execute(stmt)
+        document_db = result.scalar_one_or_none()
 
-            if not document_db:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-                )
-
-            # Check if preview exists in metadata
-            preview_path = None
-            if document_db.doc_metadata and "preview_path" in document_db.doc_metadata:
-                preview_path = document_db.doc_metadata["preview_path"]
-
-            if preview_path:
-                full_preview_path = os.path.join(settings.UPLOAD_DIR, preview_path)
-                if os.path.exists(full_preview_path):
-                    return FileResponse(
-                        path=full_preview_path,
-                        media_type="image/png",
-                        filename=f"preview_{document_db.original_filename}.png",
-                    )
-
-            # No preview available
+        if not document_db:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Preview not available for this document",
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
             )
 
-        finally:
-            await workspace_service.clear_workspace_context(db)
+        # Check if preview exists in metadata
+        preview_path = None
+        if document_db.doc_metadata and "preview_path" in document_db.doc_metadata:
+            preview_path = document_db.doc_metadata["preview_path"]
+
+        if preview_path:
+            full_preview_path = os.path.join(settings.UPLOAD_DIR, preview_path)
+            if os.path.exists(full_preview_path):
+                return FileResponse(
+                    path=full_preview_path,
+                    media_type="image/png",
+                    filename=f"preview_{document_db.original_filename}.png",
+                )
+
+        # No preview available
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Preview not available for this document",
+        )
+
 
     else:
         # Fallback to in-memory storage - search by UUID string
@@ -719,40 +694,35 @@ async def get_document_content(
     workspace_id = workspace_context["workspace_id"]
 
     if db:
-        # Set workspace context for RLS
-        await workspace_service.set_workspace_context(db, workspace_id)
 
-        try:
-            stmt = select(DocumentDB).where(
-                and_(
-                    DocumentDB.id == document_id,
-                    DocumentDB.workspace_id == workspace_id,
-                    DocumentDB.user_id == current_user["id"],
-                    DocumentDB.deleted_at.is_(None),
-                )
+        stmt = select(DocumentDB).where(
+            and_(
+                DocumentDB.id == document_id,
+                DocumentDB.workspace_id == workspace_id,
+                DocumentDB.user_id == current_user["id"],
+                DocumentDB.deleted_at.is_(None),
+            )
+        )
+
+        result = await db.execute(stmt)
+        document_db = result.scalar_one_or_none()
+
+        if not document_db:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
             )
 
-            result = await db.execute(stmt)
-            document_db = result.scalar_one_or_none()
+        return {
+            "document_id": document_db.id,
+            "title": document_db.title,
+            "original_filename": document_db.original_filename,
+            "extracted_text": document_db.extracted_text or "",
+            "metadata": document_db.doc_metadata or {},
+            "status": document_db.status,
+            "created_at": document_db.created_at,
+            "updated_at": document_db.updated_at,
+        }
 
-            if not document_db:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-                )
-
-            return {
-                "document_id": document_db.id,
-                "title": document_db.title,
-                "original_filename": document_db.original_filename,
-                "extracted_text": document_db.extracted_text or "",
-                "metadata": document_db.doc_metadata or {},
-                "status": document_db.status,
-                "created_at": document_db.created_at,
-                "updated_at": document_db.updated_at,
-            }
-
-        finally:
-            await workspace_service.clear_workspace_context(db)
 
     else:
         # Fallback to in-memory storage - search by UUID string
@@ -786,39 +756,34 @@ async def delete_document(
     workspace_id = workspace_context["workspace_id"]
 
     if db:
-        # Set workspace context for RLS
-        await workspace_service.set_workspace_context(db, workspace_id)
 
-        try:
-            stmt = select(DocumentDB).where(
-                and_(
-                    DocumentDB.id == document_id,
-                    DocumentDB.workspace_id == workspace_id,
-                    DocumentDB.user_id == current_user["id"],
-                    DocumentDB.deleted_at.is_(None),
-                )
+        stmt = select(DocumentDB).where(
+            and_(
+                DocumentDB.id == document_id,
+                DocumentDB.workspace_id == workspace_id,
+                DocumentDB.user_id == current_user["id"],
+                DocumentDB.deleted_at.is_(None),
+            )
+        )
+
+        result = await db.execute(stmt)
+        document_db = result.scalar_one_or_none()
+
+        if not document_db:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
             )
 
-            result = await db.execute(stmt)
-            document_db = result.scalar_one_or_none()
+        # Soft delete (mark as deleted)
+        document_db.deleted_at = datetime.utcnow()
+        document_db.deleted_by = current_user["id"]
 
-            if not document_db:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-                )
+        await db.commit()
 
-            # Soft delete (mark as deleted)
-            document_db.deleted_at = datetime.utcnow()
-            document_db.deleted_by = current_user["id"]
+        # Optionally delete physical file
+        if os.path.exists(document_db.file_path):
+            os.remove(document_db.file_path)
 
-            await db.commit()
-
-            # Optionally delete physical file
-            if os.path.exists(document_db.file_path):
-                os.remove(document_db.file_path)
-
-        finally:
-            await workspace_service.clear_workspace_context(db)
 
     else:
         # Fallback to in-memory storage - search by UUID string
