@@ -51,3 +51,20 @@ async def test_failed_reset_on_a_healthy_transaction_is_not_swallowed():
         async with rls_bypass(session):
             pass
     assert session.sync_session.info["rls_bypass"] is False
+
+
+async def test_worker_refuses_tasks_when_the_startup_rls_check_fails(monkeypatch):
+    import app.tasks.db as task_db
+
+    def failing_check(coro):
+        coro.close()
+        raise RuntimeError("worker: Postgres row-level security is NOT enforced")
+
+    monkeypatch.setattr(task_db, "run_async", failing_check)
+    monkeypatch.setattr(task_db, "_rls_block_reason", None)
+
+    task_db._check_rls_on_start()  # must not raise: Celery would swallow it anyway
+
+    with pytest.raises(RuntimeError, match="NOT enforced"):
+        async with task_db.task_session():
+            pass
