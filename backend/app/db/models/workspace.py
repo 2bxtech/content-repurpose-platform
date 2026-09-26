@@ -20,7 +20,6 @@ class Workspace(BaseModel, WorkspaceMixin):
             "max_users": 10,
             "max_documents": 100,
             "max_storage_mb": 1000,
-            "ai_requests_per_month": 1000,
             "features_enabled": ["basic_transformations"],
         },
     )

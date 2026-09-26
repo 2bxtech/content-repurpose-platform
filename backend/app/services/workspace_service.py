@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import logging
 
 from app.db.models.workspace import Workspace
+from app.services.ai_budget import ai_budget_status
 from app.db.models.user import User
 from app.db.models.document import Document
 from app.db.models.transformation import Transformation
@@ -87,21 +88,7 @@ class WorkspaceService:
         stats = await self.get_workspace_stats(db, workspace_id)
 
         # Get monthly AI requests (current month)
-        current_month = datetime.now().replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-
-
-        monthly_requests_stmt = select(func.count(Transformation.id)).where(
-            and_(
-                Transformation.workspace_id == workspace_id,
-                Transformation.created_at >= current_month,
-                Transformation.deleted_at.is_(None),
-            )
-        )
-        monthly_requests_result = await db.execute(monthly_requests_stmt)
-        monthly_ai_requests = monthly_requests_result.scalar() or 0
-
+        ai = await ai_budget_status(db, workspace_id)
 
         # Extract limits from workspace settings
         settings = workspace.settings or {}
@@ -109,7 +96,8 @@ class WorkspaceService:
             "max_users": settings.get("max_users", 10),
             "max_documents": settings.get("max_documents", 100),
             "max_storage_mb": settings.get("max_storage_mb", 1000),
-            "ai_requests_per_month": settings.get("ai_requests_per_month", 1000),
+            "ai_requests_per_month": ai.requests_limit,
+            "ai_monthly_budget_usd": ai.budget_usd,
         }
 
         # Current usage
@@ -117,7 +105,8 @@ class WorkspaceService:
             "users": stats["user_count"],
             "documents": stats["document_count"],
             "storage_mb": stats["storage_used_mb"],
-            "ai_requests_this_month": monthly_ai_requests,
+            "ai_requests_this_month": ai.requests_used,
+            "ai_spend_this_month_usd": round(ai.spend_usd, 4),
         }
 
         # Calculate usage percentages
@@ -134,6 +123,9 @@ class WorkspaceService:
                 )
             else:
                 usage_percentage[key] = 0
+        usage_percentage["ai_spend_this_month_usd"] = (
+            min(100, ai.spend_usd / ai.budget_usd * 100) if ai.budget_usd > 0 else 100
+        )
 
         return {
             "current_usage": current_usage,
@@ -233,17 +225,6 @@ class WorkspaceService:
                     f"User limit reached ({max_users}). Upgrade your plan to invite more users.",
                 )
 
-        elif action == "ai_transform":
-            usage = await self.get_workspace_usage(db, workspace_id)
-            current_requests = usage["current_usage"]["ai_requests_this_month"]
-            max_requests = usage["limits"]["ai_requests_per_month"]
-
-            if current_requests >= max_requests:
-                return (
-                    False,
-                    f"Monthly AI request limit reached ({max_requests}). Upgrade your plan or wait for next month.",
-                )
-
         return True, None
 
     async def create_default_workspace(
@@ -283,7 +264,6 @@ class WorkspaceService:
                 "max_users": 10,
                 "max_documents": 100,
                 "max_storage_mb": 1000,
-                "ai_requests_per_month": 1000,
                 "features_enabled": ["basic_transformations"],
             },
             description="Your personal workspace",

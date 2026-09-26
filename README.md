@@ -53,6 +53,7 @@ The deeper write-up, covering request lifecycle, data model and failure handling
   - Refreshing blacklists the old refresh token, logout revokes the session, and a stolen refresh token stops working once the legitimate client has refreshed.
   - Browsers can't set headers on a WebSocket handshake, so the socket token travels in the query string. The access log redacts it.
 - **Provider abstraction with a mock.** Anthropic and OpenAI implement one interface; the manager handles failover order, rate limiting and cost tracking. A mock provider lets the whole stack, and CI, run with no API keys. It is only registered when no real provider is configured (so it never masks a failing one), and it is refused when `ENVIRONMENT=production`, so a misconfigured deploy fails loudly instead of returning canned text.
+- **Per-workspace AI budgets.** Each workspace has a monthly request limit and a monthly spend limit in USD, summed from the recorded per-call cost. They're checked before any AI work is accepted (HTTP 402) and again in the worker right before the billed call, which catches work queued while the workspace was still under its limit.
 
 ## Tech stack
 
@@ -99,7 +100,6 @@ The integration suite drives the real stack. It checks that a transformation cre
 ## What I'd do next
 
 - **Verify email addresses before they unlock anything sensitive.**
-- **Per-workspace AI budgets on top of the existing per-call cost tracking.**
 - **OpenTelemetry traces across API, queue and worker.**
 
 ## License

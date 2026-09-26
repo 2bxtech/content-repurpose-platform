@@ -19,6 +19,7 @@ from app.core.celery_app import celery_app
 from app.db.models.document import Document as DocumentDB
 from app.db.models.transformation import Transformation as TransformationDB
 from app.models.transformation import TransformationStatus
+from app.services.ai_budget import ai_budget_status
 from app.services.redis_service import redis_service
 from app.services.transformation_runner import execute_transformation, finish
 from app.tasks.db import run_async, task_session
@@ -76,6 +77,20 @@ async def _process(transformation_id: uuid.UUID, workspace_id: uuid.UUID) -> Dic
             return {"transformation_id": str(transformation_id), "status": "skipped"}
 
         transformation = await db.get(TransformationDB, transformation_id)
+
+        # Work queued while the workspace was under budget may run after it has
+        # been spent; recheck spend (not request count, which includes this row)
+        # right before the billed call.
+        budget = await ai_budget_status(db, workspace_id)
+        if budget.spend_usd >= budget.budget_usd:
+            transformation = await finish(
+                db, transformation, error=f"Monthly AI budget reached (${budget.budget_usd:.2f})."
+            )
+            publish_progress(
+                transformation, "transformation_failed", error_message=transformation.error_message
+            )
+            return {"transformation_id": str(transformation_id), "status": "budget_exhausted"}
+
         publish_progress(transformation, "transformation_started", progress=10)
         try:
             document = await db.get(DocumentDB, transformation.document_id)
