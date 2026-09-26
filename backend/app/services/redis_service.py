@@ -116,13 +116,14 @@ class RedisService:
     def backfill_session_index(self) -> int:
         """Index sessions created before the per-user index existed.
 
-        Runs at startup, once per deployment (guarded by a marker key); a SCAN at
-        boot is fine where it wouldn't be on a request path. Idempotent.
+        Runs at startup until it has completed once (marker key); a SCAN at boot
+        is fine where it wouldn't be on a request path. Idempotent (SADD), so
+        concurrent startups are harmless and an interrupted run simply repeats.
         """
         if not self.is_connected():
             return 0
         try:
-            if not self.redis_client.set("sessions:index:backfilled", "1", nx=True):
+            if self.redis_client.exists("sessions:index:backfilled"):
                 return 0
             count = 0
             pipe = self.redis_client.pipeline()
@@ -132,12 +133,12 @@ class RedisService:
                 pipe.expire(self._session_index(user_id), settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600)
                 count += 1
             pipe.execute()
+            self.redis_client.set("sessions:index:backfilled", "1")  # only after success
             if count:
                 logger.info("Indexed %d pre-existing refresh sessions", count)
             return count
         except Exception as e:
-            self.redis_client.delete("sessions:index:backfilled")  # retry next start
-            logger.error(f"Error backfilling session index: {str(e)}")
+            logger.error(f"Error backfilling session index (will retry next start): {str(e)}")
             return 0
 
     @staticmethod

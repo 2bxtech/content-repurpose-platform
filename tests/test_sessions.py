@@ -70,3 +70,21 @@ def test_sessions_from_before_the_index_are_backfilled_once(service):
 
     assert service.invalidate_all_user_sessions("u9") is True
     assert not service.redis_client.exists("session:u9:legacy")
+
+
+def test_an_interrupted_backfill_is_retried(service, monkeypatch):
+    service.redis_client.setex("session:u7:old", 3600, '{"refresh_token_jti": "old", "last_activity": "x"}')
+    real_pipeline = service.redis_client.pipeline
+
+    class Boom:
+        def __getattr__(self, name):
+            def fail(*a, **k):
+                raise ConnectionError("killed mid-backfill")
+            return fail
+
+    monkeypatch.setattr(service.redis_client, "pipeline", lambda: Boom())
+    assert service.backfill_session_index() == 0  # logged, not raised
+    assert not service.redis_client.exists("sessions:index:backfilled")
+
+    monkeypatch.setattr(service.redis_client, "pipeline", real_pipeline)
+    assert service.backfill_session_index() == 1
