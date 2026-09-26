@@ -8,6 +8,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+_REVOKE_ALL_SESSIONS = """
+local jtis = redis.call('SMEMBERS', KEYS[1])
+for _, jti in ipairs(jtis) do redis.call('UNLINK', ARGV[1] .. jti) end
+redis.call('UNLINK', KEYS[1])
+return #jtis
+"""
+
+
 class RedisService:
     """Redis service for session management, token blacklisting, and rate limiting"""
 
@@ -105,6 +113,33 @@ class RedisService:
             return False
 
     # Session management
+    def backfill_session_index(self) -> int:
+        """Index sessions created before the per-user index existed.
+
+        Runs at startup, once per deployment (guarded by a marker key); a SCAN at
+        boot is fine where it wouldn't be on a request path. Idempotent.
+        """
+        if not self.is_connected():
+            return 0
+        try:
+            if not self.redis_client.set("sessions:index:backfilled", "1", nx=True):
+                return 0
+            count = 0
+            pipe = self.redis_client.pipeline()
+            for key in self.redis_client.scan_iter(match="session:*:*", count=500):
+                _, user_id, jti = key.split(":", 2)
+                pipe.sadd(self._session_index(user_id), jti)
+                pipe.expire(self._session_index(user_id), settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600)
+                count += 1
+            pipe.execute()
+            if count:
+                logger.info("Indexed %d pre-existing refresh sessions", count)
+            return count
+        except Exception as e:
+            self.redis_client.delete("sessions:index:backfilled")  # retry next start
+            logger.error(f"Error backfilling session index: {str(e)}")
+            return 0
+
     @staticmethod
     def _session_index(user_id) -> str:
         return f"sessions:{user_id}"
@@ -216,9 +251,11 @@ class RedisService:
             return False
 
         try:
-            index = self._session_index(user_id)
-            jtis = self.redis_client.smembers(index)
-            self.redis_client.unlink(index, *[f"session:{user_id}:{jti}" for jti in jtis])
+            # One server-side step, so a login landing between reading the index and
+            # deleting it can't be orphaned (alive but no longer indexed).
+            self.redis_client.eval(
+                _REVOKE_ALL_SESSIONS, 1, self._session_index(user_id), f"session:{user_id}:"
+            )
             return True
         except Exception as e:
             logger.error(f"Error invalidating all user sessions: {str(e)}")

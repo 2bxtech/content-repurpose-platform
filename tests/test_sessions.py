@@ -58,3 +58,15 @@ def test_consuming_and_revoking_keep_the_index_in_step(service):
     assert service.invalidate_all_user_sessions("u1") is True
     assert service.get_user_sessions("u1") == []
     assert not service.redis_client.exists("session:u1:b", "sessions:u1")
+
+
+def test_sessions_from_before_the_index_are_backfilled_once(service):
+    # A session written by the previous version: key only, no index entry.
+    service.redis_client.setex("session:u9:legacy", 3600, '{"refresh_token_jti": "legacy", "last_activity": "x"}')
+
+    assert service.backfill_session_index() == 1
+    assert [s["refresh_token_jti"] for s in service.get_user_sessions("u9")] == ["legacy"]
+    assert service.backfill_session_index() == 0  # once per deployment
+
+    assert service.invalidate_all_user_sessions("u9") is True
+    assert not service.redis_client.exists("session:u9:legacy")

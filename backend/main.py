@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI):
         rls = await _rls_status(check=True)
         logger.info("Row-level security: %s (as %s)", "enforced" if rls["enforced"] else "NOT enforced", rls["role"])
     logger.info("Redis: %s", "connected" if await redis_service.health_check() else "unavailable")
+    redis_service.backfill_session_index()
     await websocket_manager.start_redis_listener()
     yield
     await websocket_manager.stop_redis_listener()
