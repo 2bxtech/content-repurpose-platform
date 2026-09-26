@@ -48,6 +48,7 @@ The deeper write-up, covering request lifecycle, data model and failure handling
   - `/quick` and `/refine` stay synchronous on purpose, because the user is waiting on that exact response.
 - **Redis pub/sub for WebSocket fan-out.** A worker doesn't know which API replica holds a user's socket. Workers publish to one channel; each replica subscribes and delivers to its own sockets. That needs no sticky sessions, and a replica keeps working in local-only mode if Redis blips.
 - **UUID primary keys everywhere.** IDs aren't enumerable (`/documents/3` tells you nothing about `/documents/4`), can be generated without a database round trip, and don't collide across environments.
+- **Email verification gates spending.** Registration sends a single-purpose, expiring link (SMTP when configured, the log in local dev). Where verification is required (production by default), unverified accounts can't start AI work, so throwaway sign-ups can't burn a workspace's budget.
 - **Short-lived JWTs with refresh rotation.**
   - Access tokens last 15 minutes; refresh tokens last 7 days and carry a `jti` tracked in Redis.
   - Refreshing blacklists the old refresh token, logout revokes the session, and a stolen refresh token stops working once the legitimate client has refreshed.
@@ -101,7 +102,8 @@ The integration suite drives the real stack. It checks that a transformation cre
 
 ## What I'd do next
 
-- **Verify email addresses before they unlock anything sensitive.**
+- **Workspace invitations.** A workspace has one member today; there's a member limit, but no invite flow.
+- **Stream AI output to the browser** over the existing WebSocket, instead of delivering the result when it's complete.
 
 ## License
 

@@ -24,7 +24,7 @@ from app.db.models.transformation import Transformation as TransformationDB
 from app.db.models.document import Document as DocumentDB
 from app.db.models.transformation_preset import TransformationPreset as TransformationPresetDB
 from app.db.models.document import DocumentStatus
-from app.api.routes.auth import get_current_active_user
+from app.api.routes.auth import get_current_active_user, require_verified_email
 from app.api.routes.workspaces import get_current_workspace_context
 from app.core.database import get_db_session
 from app.core.config import settings
@@ -48,7 +48,7 @@ router = APIRouter()
 )
 async def create_transformation(
     transformation: TransformationCreate,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(require_verified_email),
     workspace_context: dict = Depends(get_current_workspace_context),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -235,7 +235,7 @@ async def _create_transformation_in_memory(transformation: TransformationCreate,
 @router.post("/quick", response_model=Transformation, status_code=status.HTTP_201_CREATED)
 async def quick_transform(
     request: QuickTransformRequest,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(require_verified_email),
     workspace_context: dict = Depends(get_current_workspace_context),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -458,7 +458,7 @@ async def get_transformation(
 async def refine_transformation(
     transformation_id: uuid.UUID,
     request: RefineRequest,
-    current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(require_verified_email),
     workspace_context: dict = Depends(get_current_workspace_context),
     db: AsyncSession = Depends(get_db_session),
 ):

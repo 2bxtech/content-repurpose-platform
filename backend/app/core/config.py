@@ -31,6 +31,23 @@ class Settings(BaseSettings):
     RATE_LIMIT_TRANSFORMATIONS: str = "30/1h"  # 30 transformations per hour
     TRUST_PROXY_HEADERS: bool = False
 
+    # Email verification. Unverified accounts can't start AI work when required
+    # (default: required in production only, so local dev needs no mail setup).
+    REQUIRE_VERIFIED_EMAIL: Optional[bool] = None
+    EMAIL_VERIFICATION_EXPIRE_HOURS: int = 48
+    FRONTEND_URL: str = "http://localhost:3000"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = "Content Repurpose <no-reply@localhost>"
+
+    @property
+    def require_verified_email(self) -> bool:
+        if self.REQUIRE_VERIFIED_EMAIL is not None:
+            return self.REQUIRE_VERIFIED_EMAIL
+        return self.ENVIRONMENT.lower() == "production"
+
     # Comma-separated user IDs allowed to use operator endpoints (global AI provider
     # config, cost data, connection stats). Empty = nobody. IDs rather than emails:
     # registration doesn't verify email ownership, so an email allowlist could be

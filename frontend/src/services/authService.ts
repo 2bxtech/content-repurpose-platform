@@ -44,3 +44,12 @@ export const getCurrentUser = async (): Promise<User> => {
 };
 
 export default api;
+
+export const verifyEmail = async (token: string): Promise<void> => {
+  await api.post('/auth/verify-email', { token });
+};
+
+export const resendVerification = async (): Promise<{ sent: boolean }> => {
+  const response = await api.post<{ sent: boolean }>('/auth/resend-verification');
+  return response.data;
+};

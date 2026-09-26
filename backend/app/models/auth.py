@@ -90,6 +90,10 @@ class TokenData(BaseModel):
     token_type: Optional[str] = None  # "access" or "refresh"
 
 
+class EmailVerificationRequest(BaseModel):
+    token: str
+
+
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 

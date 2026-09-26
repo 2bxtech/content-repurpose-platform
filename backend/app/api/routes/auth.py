@@ -13,6 +13,7 @@ import logging
 import uuid
 
 from app.models.auth import (
+    EmailVerificationRequest,
     UserCreate,
     User,
     Token,
@@ -28,6 +29,7 @@ from app.core.config import settings
 from app.core.database import get_db_session
 from app.core.tenancy import rls_bypass, set_tenant
 from app.services.auth_service import auth_service
+from app.services.email import send_verification_email
 from app.services.redis_service import redis_service
 from app.services.workspace_service import workspace_service
 
@@ -180,6 +182,19 @@ async def require_platform_admin(
     return current_user
 
 
+async def require_verified_email(
+    current_user: Annotated[dict, Depends(get_current_active_user)],
+):
+    """Gate for actions that spend money (AI calls) when verification is required,
+    so throwaway accounts can't burn a workspace's AI budget."""
+    if settings.require_verified_email and not current_user.get("is_verified", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Verify your email address to run AI transformations.",
+        )
+    return current_user
+
+
 @router.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
 async def register_user(
     user: UserCreate, request: Request, db: AsyncSession = Depends(get_db_session)
@@ -235,6 +250,10 @@ async def register_user(
                 await db.refresh(user_db)
 
                 logger.info(f"New user registered: {user.email} (ID: {user_db.id})")
+                await send_verification_email(
+                    user_db.email,
+                    auth_service.create_email_verification_token(user_db.id, user_db.email),
+                )
 
                 return User(
                     id=user_db.id,
@@ -701,3 +720,36 @@ async def verify_token(current_user: dict = Depends(get_current_active_user)):
         "workspace_id": str(current_user.get("workspace_id", "")),
         "message": "Token is valid"
     }
+
+
+@router.post("/verify-email")
+async def verify_email(payload: EmailVerificationRequest, db: AsyncSession = Depends(get_db_session)):
+    """Confirm an email address from the link sent at registration. Idempotent."""
+    invalid = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired verification link"
+    )
+    token_data = auth_service.verify_token(payload.token, "email_verify")
+    if not token_data or db is None:
+        raise invalid
+    user = await get_db_user_by_id(db, token_data.user_id)
+    # The link is for one address: if the account's email changed since, it's stale.
+    if not user or (user.email or "").lower() != (token_data.email or "").lower():
+        raise invalid
+    if not user.is_verified:
+        await set_tenant(db, user.workspace_id)
+        user.is_verified = True
+        await db.commit()
+        logger.info(f"Email verified for user {user.id}")
+    return {"verified": True}
+
+
+@router.post("/resend-verification")
+async def resend_verification(current_user: Annotated[dict, Depends(get_current_active_user)]):
+    """Send a fresh verification link to the signed-in user (rate-limited)."""
+    if current_user.get("is_verified"):
+        return {"sent": False, "detail": "Email already verified"}
+    await send_verification_email(
+        current_user["email"],
+        auth_service.create_email_verification_token(current_user["id"], current_user["email"]),
+    )
+    return {"sent": True}
