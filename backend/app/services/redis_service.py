@@ -49,14 +49,21 @@ class RedisService:
             logger.error(f"Error closing Redis connection: {str(e)}")
 
     def is_connected(self) -> bool:
-        """Check if Redis is connected"""
+        """Whether a Redis client is configured.
+
+        Deliberately no network call: this guards every helper below, and a PING
+        first doubled the round trips of each operation (visible in traces). A
+        Redis outage surfaces as an exception inside each helper's try block,
+        which returns the same fallback value as before.
+        """
+        return self.redis_client is not None
+
+    def ping(self) -> bool:
+        """A real round trip, for the few callers that must know Redis is up now."""
         try:
-            if self.redis_client:
-                self.redis_client.ping()
-                return True
-        except:
-            pass
-        return False
+            return bool(self.redis_client and self.redis_client.ping())
+        except Exception:
+            return False
 
     async def health_check(self) -> bool:
         """Async health check for Redis connection"""
@@ -136,12 +143,11 @@ class RedisService:
             return []
 
         try:
-            pattern = f"session:{user_id}:*"
-            keys = self.redis_client.keys(pattern)
+            # SCAN, not KEYS: KEYS walks the whole keyspace and blocks Redis while it does.
+            keys = list(self.redis_client.scan_iter(match=f"session:{user_id}:*", count=100))
             sessions = []
 
-            for key in keys:
-                session_data = self.redis_client.get(key)
+            for session_data in self.redis_client.mget(keys) if keys else []:
                 if session_data:
                     sessions.append(json.loads(session_data))
 
@@ -196,10 +202,9 @@ class RedisService:
             return False
 
         try:
-            pattern = f"session:{user_id}:*"
-            keys = self.redis_client.keys(pattern)
+            keys = list(self.redis_client.scan_iter(match=f"session:{user_id}:*", count=100))
             if keys:
-                self.redis_client.delete(*keys)
+                self.redis_client.unlink(*keys)
             return True
         except Exception as e:
             logger.error(f"Error invalidating all user sessions: {str(e)}")

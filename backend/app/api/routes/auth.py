@@ -654,7 +654,7 @@ async def change_password(
         )
 
     # Password changes must be able to revoke existing refresh sessions.
-    if settings.ENVIRONMENT == "production" and not redis_service.is_connected():
+    if settings.ENVIRONMENT == "production" and not redis_service.ping():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication session service unavailable",
