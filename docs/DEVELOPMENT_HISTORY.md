@@ -38,3 +38,8 @@ An audit before publishing compared the README against the code and found featur
   - Dependency refresh and a trixie base image with 0 critical CVEs.
   - An async rate limiter, removing two blocking Redis calls from every request.
   - Postgres row-level security enforced through an unprivileged app role, checked by a test inside the database.
+- **#17–#21 Closing the README's "next" list**, plus a retroactive Codex review of #14–#16:
+  - The worker's RLS startup guard now really refuses work (Celery swallows exceptions raised in signal handlers).
+  - Per-workspace monthly AI budgets (requests and USD), enforced before work is accepted and again in the worker. Review found a concurrency overrun (fixed with an advisory lock) and that owners could raise their own limits.
+  - OpenTelemetry tracing across API, queue and worker. Its first traces exposed a `PING` before every Redis command and `KEYS` on auth paths, replaced by a per-user session index.
+  - Email verification, required for AI work in production.
