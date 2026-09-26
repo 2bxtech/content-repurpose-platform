@@ -8,6 +8,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+_REVOKE_ALL_SESSIONS = """
+local jtis = redis.call('SMEMBERS', KEYS[1])
+for _, jti in ipairs(jtis) do redis.call('UNLINK', ARGV[1] .. jti) end
+redis.call('UNLINK', KEYS[1])
+return #jtis
+"""
+
+
 class RedisService:
     """Redis service for session management, token blacklisting, and rate limiting"""
 
@@ -49,14 +57,21 @@ class RedisService:
             logger.error(f"Error closing Redis connection: {str(e)}")
 
     def is_connected(self) -> bool:
-        """Check if Redis is connected"""
+        """Whether a Redis client is configured.
+
+        Deliberately no network call: this guards every helper below, and a PING
+        first doubled the round trips of each operation (visible in traces). A
+        Redis outage surfaces as an exception inside each helper's try block,
+        which returns the same fallback value as before.
+        """
+        return self.redis_client is not None
+
+    def ping(self) -> bool:
+        """A real round trip, for the few callers that must know Redis is up now."""
         try:
-            if self.redis_client:
-                self.redis_client.ping()
-                return True
-        except:
-            pass
-        return False
+            return bool(self.redis_client and self.redis_client.ping())
+        except Exception:
+            return False
 
     async def health_check(self) -> bool:
         """Async health check for Redis connection"""
@@ -98,6 +113,38 @@ class RedisService:
             return False
 
     # Session management
+    def backfill_session_index(self) -> int:
+        """Index sessions created before the per-user index existed.
+
+        Runs at startup until it has completed once (marker key); a SCAN at boot
+        is fine where it wouldn't be on a request path. Idempotent (SADD), so
+        concurrent startups are harmless and an interrupted run simply repeats.
+        """
+        if not self.is_connected():
+            return 0
+        try:
+            if self.redis_client.exists("sessions:index:backfilled"):
+                return 0
+            count = 0
+            pipe = self.redis_client.pipeline()
+            for key in self.redis_client.scan_iter(match="session:*:*", count=500):
+                _, user_id, jti = key.split(":", 2)
+                pipe.sadd(self._session_index(user_id), jti)
+                pipe.expire(self._session_index(user_id), settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600)
+                count += 1
+            pipe.execute()
+            self.redis_client.set("sessions:index:backfilled", "1")  # only after success
+            if count:
+                logger.info("Indexed %d pre-existing refresh sessions", count)
+            return count
+        except Exception as e:
+            logger.error(f"Error backfilling session index (will retry next start): {str(e)}")
+            return 0
+
+    @staticmethod
+    def _session_index(user_id) -> str:
+        return f"sessions:{user_id}"
+
     def create_user_session(
         self, user_id: int, refresh_token_jti: str, device_info: Dict[str, Any]
     ) -> bool:
@@ -114,14 +161,13 @@ class RedisService:
                 "device_info": device_info,
             }
 
-            key = f"session:{user_id}:{refresh_token_jti}"
-            self.redis_client.setex(
-                key,
-                settings.REFRESH_TOKEN_EXPIRE_DAYS
-                * 24
-                * 3600,  # Convert days to seconds
-                json.dumps(session_data),
-            )
+            ttl = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
+            index = self._session_index(user_id)
+            pipe = self.redis_client.pipeline()
+            pipe.setex(f"session:{user_id}:{refresh_token_jti}", ttl, json.dumps(session_data))
+            pipe.sadd(index, refresh_token_jti)
+            pipe.expire(index, ttl)  # outlives every session it lists
+            pipe.execute()
 
             # Manage session limit per user
             self._manage_user_session_limit(user_id)
@@ -136,15 +182,21 @@ class RedisService:
             return []
 
         try:
-            pattern = f"session:{user_id}:*"
-            keys = self.redis_client.keys(pattern)
-            sessions = []
-
-            for key in keys:
-                session_data = self.redis_client.get(key)
+            # Per-user index set instead of pattern matching: KEYS blocks Redis and
+            # SCAN walks the whole keyspace; this is two round trips whatever its size.
+            index = self._session_index(user_id)
+            jtis = sorted(self.redis_client.smembers(index))
+            if not jtis:
+                return []
+            values = self.redis_client.mget([f"session:{user_id}:{jti}" for jti in jtis])
+            sessions, expired = [], []
+            for jti, session_data in zip(jtis, values):
                 if session_data:
                     sessions.append(json.loads(session_data))
-
+                else:
+                    expired.append(jti)
+            if expired:  # session keys expire on their own; drop them from the index
+                self.redis_client.srem(index, *expired)
             return sessions
         except Exception as e:
             logger.error(f"Error getting user sessions: {str(e)}")
@@ -156,8 +208,10 @@ class RedisService:
             return False
 
         try:
-            key = f"session:{user_id}:{refresh_token_jti}"
-            self.redis_client.delete(key)
+            pipe = self.redis_client.pipeline()
+            pipe.delete(f"session:{user_id}:{refresh_token_jti}")
+            pipe.srem(self._session_index(user_id), refresh_token_jti)
+            pipe.execute()
             return True
         except Exception as e:
             logger.error(f"Error invalidating session: {str(e)}")
@@ -172,7 +226,9 @@ class RedisService:
         if not self.is_connected():
             return None
         try:
-            return self.redis_client.delete(f"session:{user_id}:{refresh_token_jti}") == 1
+            consumed = self.redis_client.delete(f"session:{user_id}:{refresh_token_jti}") == 1
+            self.redis_client.srem(self._session_index(user_id), refresh_token_jti)
+            return consumed
         except Exception as e:
             logger.error(f"Error consuming session: {str(e)}")
             return None
@@ -196,10 +252,11 @@ class RedisService:
             return False
 
         try:
-            pattern = f"session:{user_id}:*"
-            keys = self.redis_client.keys(pattern)
-            if keys:
-                self.redis_client.delete(*keys)
+            # One server-side step, so a login landing between reading the index and
+            # deleting it can't be orphaned (alive but no longer indexed).
+            self.redis_client.eval(
+                _REVOKE_ALL_SESSIONS, 1, self._session_index(user_id), f"session:{user_id}:"
+            )
             return True
         except Exception as e:
             logger.error(f"Error invalidating all user sessions: {str(e)}")
@@ -208,11 +265,13 @@ class RedisService:
     def _manage_user_session_limit(self, user_id: int):
         """Ensure user doesn't exceed maximum sessions"""
         try:
+            # Runs after the new session was added, so trim to exactly the maximum
+            # (the old `>=`/`-MAX+1` left users one session short of it).
             sessions = self.get_user_sessions(user_id)
-            if len(sessions) >= settings.MAX_SESSIONS_PER_USER:
-                # Sort by last activity and remove oldest sessions
+            excess = len(sessions) - settings.MAX_SESSIONS_PER_USER
+            if excess > 0:
                 sessions.sort(key=lambda x: x["last_activity"])
-                sessions_to_remove = sessions[: -settings.MAX_SESSIONS_PER_USER + 1]
+                sessions_to_remove = sessions[:excess]
 
                 for session in sessions_to_remove:
                     self.invalidate_user_session(user_id, session["refresh_token_jti"])
